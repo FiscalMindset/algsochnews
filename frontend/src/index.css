@@ -1,0 +1,213 @@
+/* =============================================================
+   Global Design System — AI News Video Generator
+   Dark Futuristic News Studio Theme
+   ============================================================= */
+
+:root {
+  /* Core palette */
+  --bg-primary:    #0B0F1A;
+  --bg-secondary:  #0F1628;
+  --bg-card:       rgba(15, 22, 40, 0.85);
+  --bg-input:      rgba(255, 255, 255, 0.04);
+  --bg-glass:      rgba(255, 255, 255, 0.05);
+
+  /* Accent system */
+  --accent-blue:   #3B82F6;
+  --accent-cyan:   #06B6D4;
+  --accent-purple: #8B5CF6;
+  --accent-pink:   #EC4899;
+  --accent-red:    #EF4444;
+  --accent-gold:   #F59E0B;
+  --accent-green:  #10B981;
+
+  /* Gradient presets */
+  --gradient-primary:  linear-gradient(135deg, #3B82F6 0%, #8B5CF6 100%);
+  --gradient-hero:     linear-gradient(135deg, #0B0F1A 0%, #0F1628 50%, #1A0F28 100%);
+  --gradient-card:     linear-gradient(145deg, rgba(59,130,246,0.08) 0%, rgba(139,92,246,0.04) 100%);
+  --gradient-button:   linear-gradient(135deg, #3B82F6 0%, #6366F1 50%, #8B5CF6 100%);
+  --gradient-ticker:   linear-gradient(90deg, #EF4444 0%, #DC2626 100%);
+
+  /* Typography */
+  --font-sans:  'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono:  'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Spacing */
+  --radius-sm:   6px;
+  --radius-md:   12px;
+  --radius-lg:   20px;
+  --radius-xl:   28px;
+  --radius-full: 9999px;
+
+  /* Borders */
+  --border-subtle:   rgba(255, 255, 255, 0.06);
+  --border-active:   rgba(59, 130, 246, 0.4);
+  --border-glow:     rgba(59, 130, 246, 0.6);
+
+  /* Shadows */
+  --shadow-card:   0 4px 24px rgba(0, 0, 0, 0.4), 0 1px 4px rgba(0, 0, 0, 0.2);
+  --shadow-glow:   0 0 40px rgba(59, 130, 246, 0.2), 0 0 80px rgba(139, 92, 246, 0.1);
+  --shadow-button: 0 4px 20px rgba(59, 130, 246, 0.4);
+
+  /* Transitions */
+  --transition-fast:   150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base:   250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow:   400ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-spring: 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ---- Reset & Base ------------------------------------------ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-primary);
+  color: rgba(255, 255, 255, 0.92);
+  line-height: 1.6;
+  min-height: 100vh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ---- Scrollbar -------------------------------------------- */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); }
+::-webkit-scrollbar-thumb { background: rgba(59,130,246,0.4); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(59,130,246,0.7); }
+
+/* ---- Selection -------------------------------------------- */
+::selection { background: rgba(59,130,246,0.35); color: #fff; }
+
+/* ---- Utility classes -------------------------------------- */
+.text-gradient {
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.glass {
+  background: var(--bg-glass);
+  backdrop-filter: blur(16px) saturate(1.5);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  border: 1px solid var(--border-subtle);
+}
+
+.glow-ring {
+  box-shadow: 0 0 0 1px var(--border-active), var(--shadow-glow);
+}
+
+/* ---- Animated background ---------------------------------- */
+.bg-animated {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.bg-animated::before,
+.bg-animated::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(100px);
+  opacity: 0.12;
+  animation: drift 18s ease-in-out infinite alternate;
+}
+
+.bg-animated::before {
+  width: 700px; height: 700px;
+  background: radial-gradient(circle, #3B82F6, transparent 70%);
+  top: -200px; left: -200px;
+}
+
+.bg-animated::after {
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, #8B5CF6, transparent 70%);
+  bottom: -150px; right: -150px;
+  animation-delay: -9s;
+  animation-duration: 22s;
+}
+
+@keyframes drift {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(60px, 40px) scale(1.15); }
+}
+
+/* ---- Live indicator --------------------------------------- */
+.live-dot {
+  width: 8px; height: 8px;
+  background: var(--accent-red);
+  border-radius: 50%;
+  animation: pulse-red 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239,68,68,0.6); }
+  50%       { opacity: 0.7; box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+}
+
+/* ---- Spinner ---------------------------------------------- */
+.spinner {
+  width: 22px; height: 22px;
+  border: 2px solid rgba(255,255,255,0.15);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- Progress bar ----------------------------------------- */
+.progress-bar-wrap {
+  height: 4px;
+  background: rgba(255,255,255,0.08);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-full);
+  transition: width 0.4s ease;
+  box-shadow: 0 0 12px rgba(59,130,246,0.6);
+}
+
+/* ---- Fade-in animation ------------------------------------ */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.fade-up { animation: fadeUp 0.5s ease both; }
+.fade-up-delay-1 { animation-delay: 0.1s; }
+.fade-up-delay-2 { animation-delay: 0.2s; }
+.fade-up-delay-3 { animation-delay: 0.3s; }
+.fade-up-delay-4 { animation-delay: 0.45s; }
+
+/* ---- Shine shimmer ---------------------------------------- */
+@keyframes shimmer {
+  0%   { background-position: -300px 0; }
+  100% { background-position: 300px 0; }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,0.02) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.02) 75%);
+  background-size: 600px 100%;
+  animation: shimmer 1.8s linear infinite;
+}
+
+/* ---- Scrolling ticker ------------------------------------- */
+@keyframes ticker-scroll {
+  from { transform: translateX(100vw); }
+  to   { transform: translateX(-200%); }
+}
+
+.ticker-text {
+  animation: ticker-scroll 18s linear infinite;
+  white-space: nowrap;
+}
