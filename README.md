@@ -33,16 +33,10 @@ Instead of returning a plain summary, the system produces:
 
 ## 4-Agent Newsroom Architecture
 
-1. **Article Extraction Agent**  
-   Fetches the article, cleans the text, ranks extraction candidates, and collects source images.
-
-2. **News Editor Agent**  
-   Builds story beats, generates anchor-style narration, and shapes the editorial flow.
-
-3. **Visual Packaging Agent**  
-   Creates segment headlines, subheadlines, tags, layouts, lower thirds, ticker text, support visuals, and scene composition.
-
-4. **QA / Evaluation Agent**  
+1. **Article Extraction Agent**Fetches the article, cleans the text, ranks extraction candidates, and collects source images.
+2. **News Editor Agent**Builds story beats, generates anchor-style narration, and shapes the editorial flow.
+3. **Visual Packaging Agent**Creates segment headlines, subheadlines, tags, layouts, lower thirds, ticker text, support visuals, and scene composition.
+4. **QA / Evaluation Agent**
    Scores the package, checks quality, and triggers targeted retries only where needed.
 
 ```mermaid
@@ -201,31 +195,31 @@ If `5173` is busy, Vite will automatically move to another port such as `5174`.
 
 ## Environment Variables
 
-| Variable | Purpose | Example / Default |
-|---|---|---|
-| `GEMINI_API_KEY` | Gemini API access for editorial refinement | `your_key_here` |
-| `GEMINI_MODEL` | Gemini model name | `gemini-1.5-flash` |
-| `USE_GEMINI` | Enable or disable Gemini refinement | `true` |
-| `TTS_ENGINE` | Preferred TTS engine | `gtts` |
-| `OUTPUT_DIR` | Final generated assets directory | `./outputs` |
-| `MEDIA_DIR` | Intermediate scene/media directory | `./media` |
-| `MAX_ARTICLE_LENGTH` | Max article length for processing | `15000` |
-| `VIDEO_WIDTH` | Video width | `1280` |
-| `VIDEO_HEIGHT` | Video height | `720` |
-| `VIDEO_FPS` | Target FPS | `24` |
-| `WORDS_PER_SECOND` | Narration timing estimate | `2.5` |
-| `QA_THRESHOLD` | QA threshold tuning value | `0.6` |
-| `MAX_RETRIES` | Max QA retry rounds | `2` |
+| Variable               | Purpose                                    | Example / Default    |
+| ---------------------- | ------------------------------------------ | -------------------- |
+| `GEMINI_API_KEY`     | Gemini API access for editorial refinement | `your_key_here`    |
+| `GEMINI_MODEL`       | Gemini model name                          | `gemini-1.5-flash` |
+| `USE_GEMINI`         | Enable or disable Gemini refinement        | `true`             |
+| `TTS_ENGINE`         | Preferred TTS engine                       | `gtts`             |
+| `OUTPUT_DIR`         | Final generated assets directory           | `./outputs`        |
+| `MEDIA_DIR`          | Intermediate scene/media directory         | `./media`          |
+| `MAX_ARTICLE_LENGTH` | Max article length for processing          | `15000`            |
+| `VIDEO_WIDTH`        | Video width                                | `1280`             |
+| `VIDEO_HEIGHT`       | Video height                               | `720`              |
+| `VIDEO_FPS`          | Target FPS                                 | `24`               |
+| `WORDS_PER_SECOND`   | Narration timing estimate                  | `2.5`              |
+| `QA_THRESHOLD`       | QA threshold tuning value                  | `0.6`              |
+| `MAX_RETRIES`        | Max QA retry rounds                        | `2`                |
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/health` | Health and version check |
-| `POST` | `/generate` | Start a generation job |
-| `GET` | `/status/{job_id}` | Poll workflow status, agents, QA, and result |
-| `GET` | `/outputs/{job_id}/final_video.mp4` | Download or stream final video |
-| `GET` | `/outputs/{job_id}/script.json` | Download structured screenplay JSON |
+| Method   | Endpoint                              | Description                                  |
+| -------- | ------------------------------------- | -------------------------------------------- |
+| `GET`  | `/health`                           | Health and version check                     |
+| `POST` | `/generate`                         | Start a generation job                       |
+| `GET`  | `/status/{job_id}`                  | Poll workflow status, agents, QA, and result |
+| `GET`  | `/outputs/{job_id}/final_video.mp4` | Download or stream final video               |
+| `GET`  | `/outputs/{job_id}/script.json`     | Download structured screenplay JSON          |
 
 ## Generated Artifacts
 
@@ -250,7 +244,3 @@ Each completed job writes output like:
 - Personal GitHub: [@algsoch](https://github.com/algsoch)
 - Project / publishing account: [@FiscalMindset](https://github.com/FiscalMindset)
 - Email: [npdimagine@gmail.com](mailto:npdimagine@gmail.com)
-
----
-
-If you want this project extended further, the next strong upgrades would be real ASR transcription, live websocket job streaming, real LLM workflow tooling such as LangGraph/LangFuse, and richer avatar-grade broadcast rendering.
