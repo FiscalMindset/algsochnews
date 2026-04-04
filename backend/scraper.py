@@ -3,6 +3,7 @@ scraper.py — Multi-source article extractor
 Attempts 3 methods in priority order and scores each result.
 """
 
+import json
 import re
 import requests
 from typing import Optional
@@ -75,8 +76,68 @@ def _extract_readability(url: str, html: str) -> Optional[dict]:
         return None
 
 
+def _extract_json_ld(url: str, html: str) -> Optional[dict]:
+    """Extractor 3: schema.org JSON-LD."""
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        blocks = soup.find_all("script", attrs={"type": "application/ld+json"})
+        texts = []
+        images = []
+        title = ""
+        authors = []
+        published_date = None
+
+        for block in blocks:
+            raw = (block.string or block.get_text() or "").strip()
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+
+            items = payload if isinstance(payload, list) else [payload]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                body = item.get("articleBody") or item.get("description")
+                if body:
+                    texts.append(body)
+                if not title:
+                    title = item.get("headline") or item.get("name") or ""
+                img = item.get("image")
+                if isinstance(img, str):
+                    images.append(img)
+                elif isinstance(img, list):
+                    images.extend(i for i in img if isinstance(i, str))
+                author = item.get("author")
+                if isinstance(author, dict) and author.get("name"):
+                    authors.append(author["name"])
+                elif isinstance(author, list):
+                    authors.extend(a.get("name") for a in author if isinstance(a, dict) and a.get("name"))
+                if not published_date:
+                    published_date = item.get("datePublished")
+
+        text = sanitize_text(" ".join(texts))
+        if len(text) < 200:
+            return None
+
+        return {
+            "title": title,
+            "text": text,
+            "top_image": images[0] if images else None,
+            "images": images[:20],
+            "authors": [a for a in authors if a],
+            "published_date": published_date,
+            "method": "json_ld",
+        }
+    except Exception as e:
+        log.warning(f"json-ld failed: {e}")
+        return None
+
+
 def _extract_beautifulsoup(url: str, html: str) -> Optional[dict]:
-    """Extractor 3: BeautifulSoup fallback"""
+    """Extractor 4: BeautifulSoup fallback"""
     try:
         soup = BeautifulSoup(html, "lxml")
 
@@ -165,7 +226,7 @@ def _score(result: dict) -> float:
         meta_score += 0.05
 
     # method bonus
-    method_bonus = {"newspaper3k": 0.1, "readability": 0.05, "beautifulsoup": 0.0}.get(
+    method_bonus = {"newspaper3k": 0.1, "readability": 0.05, "json_ld": 0.07, "beautifulsoup": 0.0}.get(
         result.get("method", ""), 0.0
     )
 
@@ -204,9 +265,13 @@ def scrape_article(url: str) -> dict:
         if r2:
             candidates.append((r2, _score(r2)))
 
-        r3 = _extract_beautifulsoup(url, html)
+        r3 = _extract_json_ld(url, html)
         if r3:
             candidates.append((r3, _score(r3)))
+
+        r4 = _extract_beautifulsoup(url, html)
+        if r4:
+            candidates.append((r4, _score(r4)))
 
     if not candidates:
         raise ValueError("All extraction methods failed — could not parse article.")
@@ -227,5 +292,16 @@ def scrape_article(url: str) -> dict:
     best["source_domain"] = extract_domain(url)
     best["word_count"] = len(best["text"].split())
     best["extraction_score"] = best_score
+    best["candidates"] = [
+        {
+            "method": item["method"],
+            "score": score,
+            "title": item.get("title", ""),
+            "word_count": len(item.get("text", "").split()),
+            "image_count": len(item.get("images", [])),
+            "selected": item["method"] == best["method"],
+        }
+        for item, score in candidates
+    ]
 
     return best

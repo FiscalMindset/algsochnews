@@ -37,7 +37,7 @@ def _group_sentences(sentences: List[str], target_words: int = 50) -> List[str]:
 
 def segment_article(
     text: str,
-    max_segments: int = 8,
+    max_segments: int = 6,
     intro_text: str = "",
 ) -> List[dict]:
     """
@@ -55,13 +55,17 @@ def segment_article(
     if not sentences:
         raise ValueError("Article too short or malformed — cannot segment.")
 
-    # Target ~55 words per segment, then trim to max_segments
-    target_wc = max(30, word_count(text) // max_segments)
+    total_segments = max(4, min(max_segments, 8))
+    body_segments = max(2, total_segments - 2)
+
+    # Target balanced body chunks while reserving space for intro + close.
+    target_wc = max(28, word_count(text) // body_segments)
     raw_groups = _group_sentences(sentences, target_words=target_wc)
 
-    # Limit total count (keep first N-1 groups + synthesise outro)
-    if len(raw_groups) > max_segments - 1:
-        raw_groups = raw_groups[: max_segments - 1]
+    if len(raw_groups) < body_segments:
+        body_segments = len(raw_groups)
+    if len(raw_groups) > body_segments:
+        raw_groups = raw_groups[:body_segments]
 
     segments: List[dict] = []
     cursor = 0.0

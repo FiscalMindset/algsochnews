@@ -13,24 +13,24 @@ log = get_logger("narration")
 # Template bank — intro / body / outro variations
 # ------------------------------------------------------------------ #
 INTRO_TEMPLATES = [
-    "Breaking news: {headline}. Here's what we know so far.",
-    "In today's top story, {headline}. Let's dive into the details.",
-    "This just in — {headline}. We bring you full coverage.",
-    "Developing story: {headline}. Our team has the latest.",
+    "Good evening. Breaking tonight: {headline}. {lead}",
+    "We begin with breaking news: {headline}. {lead}",
+    "Tonight's top story: {headline}. {lead}",
+    "This is a developing story: {headline}. {lead}",
 ]
 
 BODY_TEMPLATES = [
-    "{text}",
-    "Reports confirm: {text}",
-    "According to sources, {text}",
-    "Our correspondents reveal: {text}",
+    "{lead}",
+    "Officials say {lead}",
+    "According to the latest reporting, {lead}",
+    "The latest information indicates {lead}",
 ]
 
 OUTRO_TEMPLATES = [
-    "That's all for this report. Stay with us for further developments.",
-    "We will continue monitoring the situation and bring you updates as they happen.",
-    "For the latest news, stay tuned to our channel. This has been a live update.",
-    "Thank you for watching. We'll keep you informed as this story develops.",
+    "Authorities are still assessing the situation, and we will bring you more updates as they come in.",
+    "That is the latest for now. We will continue tracking developments and return with new information.",
+    "Officials say the situation remains active, and more confirmed details are expected soon.",
+    "For now, that is the latest verified update on this story.",
 ]
 
 
@@ -40,14 +40,17 @@ def _template_narration(
     headline: str = "",
 ) -> str:
     """Generate narration from template."""
+    sentences = [s.strip() for s in text.split(".") if len(s.strip().split()) >= 4]
+    lead = sentences[0] if sentences else text
+    lead = sanitize_text(lead.rstrip("."))
     if segment_type == "intro":
         tpl = random.choice(INTRO_TEMPLATES)
-        return tpl.format(headline=headline, text=text)
+        return tpl.format(headline=headline, text=text, lead=lead)
     elif segment_type == "outro":
         return random.choice(OUTRO_TEMPLATES)
     else:
         tpl = random.choice(BODY_TEMPLATES)
-        return tpl.format(text=text, headline=headline)
+        return tpl.format(text=text, headline=headline, lead=lead)
 
 
 # ------------------------------------------------------------------ #
@@ -124,8 +127,8 @@ def generate_narrations(
         )
         raw = sanitize_text(raw)
 
-        # 2. Gemini refinement (body segments only, to control API cost)
-        if use_gemini and seg["segment_type"] == "body":
+        # 2. Gemini refinement (use on any segment when enabled to improve tone)
+        if use_gemini:
             refined = _gemini_refine(
                 raw_narration=raw,
                 context=seg["text"],

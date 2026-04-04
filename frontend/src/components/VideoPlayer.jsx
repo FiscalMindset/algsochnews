@@ -2,7 +2,7 @@
 import { useRef, useState } from 'react'
 import { Play, Pause, Volume2, VolumeX, Maximize2 } from 'lucide-react'
 
-export default function VideoPlayer({ videoUrl, title }) {
+export default function VideoPlayer({ videoUrl, title, activeSegment = null, onProgress }) {
   const videoRef = useRef(null)
   const [playing, setPlaying]   = useState(false)
   const [muted, setMuted]       = useState(false)
@@ -20,6 +20,7 @@ export default function VideoPlayer({ videoUrl, title }) {
     const v = videoRef.current
     if (!v) return
     setProgress((v.currentTime / v.duration) * 100 || 0)
+    onProgress?.(v.currentTime, v.duration)
   }
 
   function handleSeek(e) {
@@ -40,6 +41,9 @@ export default function VideoPlayer({ videoUrl, title }) {
     if (videoRef.current?.requestFullscreen) videoRef.current.requestFullscreen()
   }
 
+  const tickerLabel = activeSegment?.top_tag || 'BREAKING'
+  const tickerText = activeSegment?.ticker_text || activeSegment?.main_headline || title
+
   return (
     <div
       className={`vp-wrapper fade-up ${hover ? 'vp-hover' : ''}`}
@@ -48,9 +52,9 @@ export default function VideoPlayer({ videoUrl, title }) {
     >
       {/* Breaking news ticker above video */}
       <div className="vp-ticker">
-        <div className="vp-ticker-badge">● BREAKING</div>
+        <div className="vp-ticker-badge">● {tickerLabel}</div>
         <div className="vp-ticker-track">
-          <span className="ticker-text">{title} &nbsp;&nbsp;&nbsp; {title} &nbsp;&nbsp;&nbsp; {title}</span>
+          <span className="ticker-text">{tickerText} &nbsp;&nbsp;&nbsp; {tickerText} &nbsp;&nbsp;&nbsp; {tickerText}</span>
         </div>
       </div>
 
@@ -78,7 +82,13 @@ export default function VideoPlayer({ videoUrl, title }) {
       </div>
 
       {/* Controls bar */}
-      <div className={`vp-controls ${hover || !playing ? 'vp-controls--visible' : ''}`}>
+        <div className={`vp-controls ${hover || !playing ? 'vp-controls--visible' : ''}`}>
+        {activeSegment && (
+          <div className="vp-now-playing">
+            <span>{activeSegment.start_timecode} - {activeSegment.end_timecode}</span>
+            <strong>{activeSegment.lower_third || activeSegment.main_headline}</strong>
+          </div>
+        )}
         <div className="vp-seek" onClick={handleSeek}>
           <div className="vp-seek-fill" style={{ width: `${progress}%` }} />
           <div className="vp-seek-thumb" style={{ left: `${progress}%` }} />
@@ -156,6 +166,22 @@ export default function VideoPlayer({ videoUrl, title }) {
           opacity: 0; transition: opacity var(--transition-base);
         }
         .vp-controls--visible { opacity: 1; }
+        .vp-now-playing {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          align-items: center;
+          flex-wrap: wrap;
+          font-size: 12px;
+          color: rgba(255,255,255,0.68);
+        }
+        .vp-now-playing span {
+          font-family: var(--font-mono);
+        }
+        .vp-now-playing strong {
+          color: white;
+          font-size: 13px;
+        }
         .vp-seek {
           height: 4px; border-radius: 2px;
           background: rgba(255,255,255,0.15); cursor: pointer;

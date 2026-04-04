@@ -1,130 +1,281 @@
-// components/TimelineView.jsx
-import { useRef } from 'react'
-
-const TYPE_COLORS = {
-  intro: '#EF4444',
-  body:  '#3B82F6',
-  outro: '#8B5CF6',
+function fmt(seconds) {
+  const safe = Math.max(0, Number(seconds || 0))
+  const m = Math.floor(safe / 60)
+  const s = Math.floor(safe % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-export default function TimelineView({ segments, totalDuration, currentTime = 0 }) {
-  if (!segments || !segments.length) return null
+function pct(value, total) {
+  return `${((value / Math.max(total, 1)) * 100).toFixed(2)}%`
+}
 
-  const pct = (s, total) => `${((s / total) * 100).toFixed(2)}%`
-  const playheadLeft = pct(currentTime, totalDuration)
-
-  function fmt(s) {
-    const m = Math.floor(s / 60); const sec = Math.floor(s % 60)
-    return `${m}:${sec.toString().padStart(2, '0')}`
-  }
+export default function TimelineView({ segments = [], totalDuration = 0, currentTime = 0 }) {
+  if (!segments.length) return null
 
   return (
-    <div className="tl-wrapper fade-up">
-      <div className="tl-header">
-        <span className="tl-title">Timeline</span>
-        <span className="tl-dur">Total: {fmt(totalDuration)}</span>
+    <section className="timeline-shell fade-up">
+      <div className="timeline-head">
+        <div>
+          <p className="timeline-kicker">Broadcast rundown</p>
+          <h2>Segment Timeline</h2>
+        </div>
+        <div className="timeline-meta">
+          <span>{segments.length} segments</span>
+          <span>{fmt(totalDuration)} total</span>
+        </div>
       </div>
 
-      <div className="tl-track">
-        {segments.map((seg, i) => {
-          const left  = pct(seg.start_time, totalDuration)
-          const width = pct(seg.end_time - seg.start_time, totalDuration)
-          const color = TYPE_COLORS[seg.segment_type] || TYPE_COLORS.body
-          return (
-            <div
-              key={i}
-              className="tl-seg"
-              style={{ left, width, '--seg-color': color }}
-              title={`${seg.headline} (${fmt(seg.start_time)} – ${fmt(seg.end_time)})`}
-            >
-              <span className="tl-seg-label">{i + 1}</span>
-            </div>
-          )
-        })}
-        {/* Playhead */}
-        <div className="tl-playhead" style={{ left: playheadLeft }} />
+      <div className="timeline-track">
+        {segments.map((segment) => (
+          <div
+            key={segment.segment_id}
+            className={`timeline-bar ${currentTime >= segment.start_time && currentTime <= segment.end_time ? 'timeline-bar--active' : ''}`}
+            style={{
+              left: pct(segment.start_time, totalDuration),
+              width: pct(segment.end_time - segment.start_time, totalDuration),
+            }}
+            title={`${segment.main_headline} · ${segment.start_timecode} - ${segment.end_timecode}`}
+          >
+            <span>{segment.segment_id}</span>
+          </div>
+        ))}
+        <div className="timeline-playhead" style={{ left: pct(currentTime, totalDuration) }} />
       </div>
 
-      {/* Timestamp markers */}
-      <div className="tl-markers">
-        {[0, 0.25, 0.5, 0.75, 1].map(r => (
-          <span key={r} style={{ left: `${r * 100}%` }} className="tl-marker">
-            {fmt(totalDuration * r)}
-          </span>
+      <div className="timeline-markers">
+        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
+          <span key={ratio} style={{ left: `${ratio * 100}%` }}>{fmt(totalDuration * ratio)}</span>
         ))}
       </div>
 
-      {/* Legend */}
-      <div className="tl-legend">
-        {Object.entries(TYPE_COLORS).map(([type, color]) => (
-          <div key={type} className="tl-leg-item">
-            <div className="tl-leg-dot" style={{ background: color }} />
-            <span>{type}</span>
-          </div>
+      <div className="timeline-grid">
+        {segments.map((segment) => (
+          <article
+            key={segment.segment_id}
+            className={`timeline-card ${currentTime >= segment.start_time && currentTime <= segment.end_time ? 'timeline-card--active' : ''}`}
+          >
+            <div className="timeline-card-media">
+              {segment.scene_image_url ? (
+                <img src={segment.scene_image_url} alt={segment.main_headline} />
+              ) : (
+                <div className="timeline-card-fallback">{segment.top_tag}</div>
+              )}
+            </div>
+            <div className="timeline-card-body">
+              <div className="timeline-card-top">
+                <span className="timeline-tag">{segment.top_tag}</span>
+                <span className="timeline-time">{segment.start_timecode} - {segment.end_timecode}</span>
+              </div>
+              <h3>{segment.main_headline}</h3>
+              <p className="timeline-subheadline">{segment.subheadline}</p>
+              <div className="timeline-detail-row">
+                <span>Layout</span>
+                <strong>{segment.layout}</strong>
+              </div>
+              <div className="timeline-detail-row">
+                <span>Lower third</span>
+                <strong>{segment.lower_third}</strong>
+              </div>
+              <div className="timeline-detail-row">
+                <span>Motion</span>
+                <strong>{segment.camera_motion}</strong>
+              </div>
+              <div className="timeline-detail-row">
+                <span>Transition</span>
+                <strong>{segment.transition}</strong>
+              </div>
+              <div className="timeline-detail-row">
+                <span>Right panel</span>
+                <strong>{segment.right_panel}</strong>
+              </div>
+            </div>
+          </article>
         ))}
       </div>
 
       <style>{`
-        .tl-wrapper {
-          background: var(--bg-card);
-          border: 1px solid var(--border-subtle);
-          border-radius: var(--radius-lg);
-          padding: 20px 24px;
-          display: flex; flex-direction: column; gap: 14px;
+        .timeline-shell {
+          display: flex;
+          flex-direction: column;
+          gap: 18px;
         }
-        .tl-header { display: flex; justify-content: space-between; align-items: center; }
-        .tl-title { font-size: 14px; font-weight: 700; color: rgba(255,255,255,0.8); }
-        .tl-dur { font-size: 12px; font-family: var(--font-mono); color: rgba(255,255,255,0.4); }
-        .tl-track {
-          position: relative; height: 36px;
-          background: rgba(255,255,255,0.04);
-          border-radius: 8px; overflow: visible;
+        .timeline-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: end;
+          gap: 16px;
+          flex-wrap: wrap;
         }
-        .tl-seg {
-          position: absolute; height: 100%;
-          background: var(--seg-color);
-          opacity: 0.75;
-          border-radius: 4px;
-          border: 1px solid rgba(255,255,255,0.1);
-          display: flex; align-items: center; justify-content: center;
+        .timeline-kicker {
+          font-size: 11px;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.42);
+          margin-bottom: 6px;
+        }
+        .timeline-head h2 {
+          font-size: 24px;
+        }
+        .timeline-meta {
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .timeline-meta span {
+          font-size: 12px;
+          color: rgba(255,255,255,0.68);
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 999px;
+          padding: 6px 10px;
+        }
+        .timeline-track {
+          position: relative;
+          height: 42px;
+          border-radius: 18px;
+          background: linear-gradient(180deg, rgba(12,16,28,0.95), rgba(7,10,18,0.95));
+          border: 1px solid rgba(255,255,255,0.08);
           overflow: hidden;
-          transition: opacity var(--transition-fast);
-          cursor: pointer;
-          box-sizing: border-box;
         }
-        .tl-seg:hover { opacity: 1; z-index: 2; }
-        .tl-seg-label {
-          font-size: 10px; font-weight: 800; color: white;
-          text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+        .timeline-bar {
+          position: absolute;
+          top: 6px;
+          bottom: 6px;
+          border-radius: 12px;
+          background: linear-gradient(90deg, rgba(59,130,246,0.9), rgba(14,165,233,0.9));
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-size: 11px;
+          font-weight: 800;
+          border: 1px solid rgba(255,255,255,0.18);
+          min-width: 34px;
         }
-        .tl-playhead {
-          position: absolute; top: -4px; bottom: -4px;
-          width: 2px; background: white;
-          border-radius: 2px;
-          box-shadow: 0 0 8px white;
-          pointer-events: none;
-          z-index: 3;
+        .timeline-bar--active {
+          background: linear-gradient(90deg, rgba(239,68,68,0.92), rgba(251,191,36,0.92));
         }
-        .tl-markers {
-          position: relative; height: 16px;
+        .timeline-playhead {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 2px;
+          transform: translateX(-50%);
+          background: white;
+          box-shadow: 0 0 14px rgba(255,255,255,0.95);
         }
-        .tl-marker {
-          position: absolute; transform: translateX(-50%);
-          font-size: 10px; font-family: var(--font-mono);
-          color: rgba(255,255,255,0.25);
+        .timeline-markers {
+          position: relative;
+          height: 14px;
         }
-        .tl-legend {
-          display: flex; gap: 16px;
+        .timeline-markers span {
+          position: absolute;
+          transform: translateX(-50%);
+          font-size: 11px;
+          color: rgba(255,255,255,0.35);
+          font-family: var(--font-mono);
         }
-        .tl-leg-item {
-          display: flex; align-items: center; gap: 6px;
-          font-size: 11px; color: rgba(255,255,255,0.45);
-          text-transform: capitalize;
+        .timeline-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 14px;
         }
-        .tl-leg-dot {
-          width: 10px; height: 10px; border-radius: 3px;
+        .timeline-card {
+          display: grid;
+          grid-template-columns: 210px minmax(0, 1fr);
+          background: rgba(10,14,24,0.9);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 20px;
+          overflow: hidden;
+          box-shadow: 0 16px 40px rgba(0,0,0,0.22);
+        }
+        .timeline-card--active {
+          border-color: rgba(239,68,68,0.26);
+          box-shadow: 0 20px 48px rgba(239,68,68,0.14);
+        }
+        .timeline-card-media {
+          background: rgba(255,255,255,0.04);
+          min-height: 170px;
+        }
+        .timeline-card-media img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+        }
+        .timeline-card-fallback {
+          height: 100%;
+          display: grid;
+          place-items: center;
+          color: rgba(255,255,255,0.84);
+          font-size: 20px;
+          font-weight: 800;
+          background: linear-gradient(135deg, rgba(59,130,246,0.22), rgba(239,68,68,0.18));
+        }
+        .timeline-card-body {
+          padding: 16px 18px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .timeline-card-top {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .timeline-tag {
+          font-size: 11px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: #fca5a5;
+          background: rgba(239,68,68,0.12);
+          border: 1px solid rgba(239,68,68,0.26);
+          border-radius: 999px;
+          padding: 5px 8px;
+        }
+        .timeline-time {
+          font-size: 11px;
+          color: rgba(255,255,255,0.4);
+          font-family: var(--font-mono);
+        }
+        .timeline-card h3 {
+          font-size: 18px;
+          line-height: 1.3;
+        }
+        .timeline-subheadline {
+          color: rgba(255,255,255,0.56);
+          line-height: 1.6;
+          font-size: 13px;
+        }
+        .timeline-detail-row {
+          display: grid;
+          grid-template-columns: 90px minmax(0, 1fr);
+          gap: 10px;
+          font-size: 12px;
+          line-height: 1.55;
+        }
+        .timeline-detail-row span {
+          color: rgba(255,255,255,0.34);
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          font-size: 10px;
+        }
+        .timeline-detail-row strong {
+          color: rgba(255,255,255,0.82);
+          font-weight: 600;
+        }
+        @media (max-width: 980px) {
+          .timeline-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        @media (max-width: 720px) {
+          .timeline-card {
+            grid-template-columns: 1fr;
+          }
         }
       `}</style>
-    </div>
+    </section>
   )
 }

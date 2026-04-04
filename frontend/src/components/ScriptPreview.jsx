@@ -1,182 +1,382 @@
-// components/ScriptPreview.jsx
-import { useState } from 'react'
-import { FileText, ChevronDown, ChevronUp, Mic, Clock } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Captions, ChevronDown, ChevronUp, FileText, Mic, Rows3 } from 'lucide-react'
 
-function fmt(s) {
-  const m = Math.floor(s / 60)
-  const sec = Math.floor(s % 60)
-  return `${m}:${sec.toString().padStart(2, '0')}`
-}
-
-const TYPE_COLORS = {
-  intro: { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.35)', text: '#EF4444', label: 'INTRO' },
-  body:  { bg: 'rgba(59,130,246,0.08)', border: 'rgba(59,130,246,0.25)', text: '#3B82F6', label: 'BODY'  },
-  outro: { bg: 'rgba(139,92,246,0.1)', border: 'rgba(139,92,246,0.3)', text: '#8B5CF6', label: 'OUTRO' },
-}
-
-function SegmentCard({ segment, index }) {
-  const [open, setOpen] = useState(index === 0)
-  const colors = TYPE_COLORS[segment.segment_type] || TYPE_COLORS.body
+function SegmentCard({ segment, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen)
 
   return (
-    <div className="seg-card" style={{ '--seg-border': colors.border, '--seg-bg': colors.bg }}>
-      <div className="seg-header" onClick={() => setOpen(o => !o)}>
-        <div className="seg-meta">
-          <span className="seg-badge" style={{ color: colors.text, borderColor: colors.border, background: colors.bg }}>
-            {colors.label}
-          </span>
-          <span className="seg-num">#{index + 1}</span>
-          <span className="seg-headline">{segment.headline}</span>
+    <article className="script-card">
+      <button className="script-card-head" onClick={() => setOpen((value) => !value)} type="button">
+        <div className="script-card-title">
+          <span className="script-chip">{segment.top_tag}</span>
+          <div>
+            <strong>{segment.main_headline}</strong>
+            <p>{segment.subheadline}</p>
+          </div>
         </div>
-        <div className="seg-time">
-          <Clock size={12} />
-          <span>{fmt(segment.start_time)} – {fmt(segment.end_time)}</span>
-          {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        <div className="script-card-time">
+          <span>{segment.start_timecode} - {segment.end_timecode}</span>
+          {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </div>
-      </div>
+      </button>
 
       {open && (
-        <div className="seg-body fade-up">
-          <div className="seg-section">
-            <div className="seg-section-label">
-              <Mic size={12} /> Narration
+        <div className="script-card-body">
+          <div className="script-card-grid">
+            <div className="script-card-panel">
+              <div className="script-card-label"><Mic size={13} /> Anchor narration</div>
+              <p>{segment.anchor_narration}</p>
             </div>
-            <p className="seg-narration">{segment.narration}</p>
+            <div className="script-card-panel">
+              <div className="script-card-label">Layout package</div>
+              <p><strong>Layout:</strong> {segment.layout}</p>
+              <p><strong>Left panel:</strong> {segment.left_panel}</p>
+              <p><strong>Right panel:</strong> {segment.right_panel}</p>
+              <p><strong>Lower third:</strong> {segment.lower_third}</p>
+              <p><strong>Camera motion:</strong> {segment.camera_motion}</p>
+              <p><strong>Transition:</strong> {segment.transition}</p>
+            </div>
+            <div className="script-card-panel">
+              <div className="script-card-label">Source grounding</div>
+              <p>{segment.source_excerpt}</p>
+              {segment.factual_points?.length > 0 && (
+                <div className="factual-list">
+                  {segment.factual_points.map((fact, index) => (
+                    <span key={index} className="fact-chip">{fact}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="script-card-panel">
+              <div className="script-card-label">Packaging rationale</div>
+              <p><strong>Headline:</strong> {segment.headline_reason}</p>
+              <p><strong>Visual:</strong> {segment.visual_rationale}</p>
+              <p><strong>Control room:</strong> {segment.control_room_cue}</p>
+              {segment.ai_support_visual_prompt && <p><strong>AI support prompt:</strong> {segment.ai_support_visual_prompt}</p>}
+            </div>
           </div>
-          <div className="seg-section">
-            <div className="seg-section-label">
-              <FileText size={12} /> Source text
-            </div>
-            <p className="seg-source-text">{segment.text || segment.narration}</p>
-          </div>
-          {segment.visual_prompt && (
-            <div className="seg-prompt">
-              <span className="seg-prompt-tag">🎨 Visual</span>
-              <span>{segment.visual_prompt}</span>
-            </div>
-          )}
         </div>
       )}
 
       <style>{`
-        .seg-card {
-          border: 1px solid var(--seg-border);
-          background: var(--seg-bg);
-          border-radius: var(--radius-md);
+        .script-card {
+          border-radius: 18px;
           overflow: hidden;
-          transition: box-shadow var(--transition-base);
+          background: rgba(10, 14, 24, 0.9);
+          border: 1px solid rgba(255,255,255,0.08);
         }
-        .seg-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-        .seg-header {
-          display: flex; align-items: center; justify-content: space-between;
-          padding: 14px 18px; cursor: pointer; gap: 12px;
+        .script-card-head {
+          width: 100%;
+          background: none;
+          border: none;
+          color: inherit;
+          text-align: left;
+          padding: 16px 18px;
+          display: flex;
+          justify-content: space-between;
+          gap: 14px;
+          cursor: pointer;
         }
-        .seg-meta { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-        .seg-badge {
-          font-size: 10px; font-weight: 800; letter-spacing: 0.1em;
-          padding: 3px 8px; border-radius: 4px; border: 1px solid;
+        .script-card-title {
+          display: flex;
+          gap: 12px;
+          align-items: start;
+          min-width: 0;
+        }
+        .script-chip {
           flex-shrink: 0;
+          font-size: 11px;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: #fca5a5;
+          border: 1px solid rgba(239,68,68,0.3);
+          background: rgba(239,68,68,0.12);
+          padding: 5px 9px;
+          border-radius: 999px;
         }
-        .seg-num { font-family: var(--font-mono); font-size: 12px; color: rgba(255,255,255,0.3); flex-shrink: 0; }
-        .seg-headline {
-          font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.85);
-          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        .script-card-title strong {
+          display: block;
+          font-size: 17px;
+          line-height: 1.35;
+          margin-bottom: 4px;
         }
-        .seg-time {
-          display: flex; align-items: center; gap: 5px;
-          font-size: 12px; color: rgba(255,255,255,0.35); flex-shrink: 0;
+        .script-card-title p {
+          color: rgba(255,255,255,0.54);
+          font-size: 13px;
+          line-height: 1.6;
+        }
+        .script-card-time {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-shrink: 0;
+          color: rgba(255,255,255,0.44);
           font-family: var(--font-mono);
+          font-size: 12px;
         }
-        .seg-body { padding: 0 18px 18px; display: flex; flex-direction: column; gap: 14px; }
-        .seg-section { display: flex; flex-direction: column; gap: 6px; }
-        .seg-section-label {
-          display: flex; align-items: center; gap: 5px;
-          font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
-          text-transform: uppercase; color: rgba(255,255,255,0.3);
+        .script-card-body {
+          padding: 0 18px 18px;
         }
-        .seg-narration {
-          font-size: 13px; line-height: 1.7; color: rgba(255,255,255,0.8);
-          background: rgba(0,0,0,0.2); border-radius: 8px;
-          padding: 10px 14px; border-left: 3px solid rgba(59,130,246,0.5);
+        .script-card-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
         }
-        .seg-source-text {
-          font-size: 12px; line-height: 1.7; color: rgba(255,255,255,0.45);
-          font-family: var(--font-mono);
+        .script-card-panel {
+          border-radius: 14px;
+          padding: 14px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.05);
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          font-size: 13px;
+          line-height: 1.65;
+          color: rgba(255,255,255,0.82);
         }
-        .seg-prompt {
-          display: flex; gap: 8px; align-items: flex-start;
-          font-size: 11px; color: rgba(255,255,255,0.35); font-style: italic;
-          background: rgba(255,255,255,0.03); border-radius: 6px;
-          padding: 8px 12px;
+        .script-card-label {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 10px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.34);
         }
-        .seg-prompt-tag { flex-shrink: 0; }
+        .factual-list {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .fact-chip {
+          font-size: 11px;
+          color: rgba(255,255,255,0.76);
+          background: rgba(59,130,246,0.12);
+          border: 1px solid rgba(59,130,246,0.24);
+          border-radius: 999px;
+          padding: 4px 8px;
+        }
+        @media (max-width: 860px) {
+          .script-card-grid {
+            grid-template-columns: 1fr;
+          }
+        }
       `}</style>
-    </div>
+    </article>
   )
 }
 
 export default function ScriptPreview({ script }) {
+  const [showJson, setShowJson] = useState(false)
+  const jsonPreview = useMemo(() => JSON.stringify(script, null, 2), [script])
+
   if (!script) return null
-  const { segments, overall_headline, article, qa_score } = script
 
   return (
-    <div className="sp-wrapper fade-up">
-      <div className="sp-header">
-        <div className="sp-title-row">
-          <FileText size={18} className="sp-icon" />
-          <h2 className="sp-title">Script Preview</h2>
-          <div className="qa-badge" title={`QA Score: ${(qa_score * 100).toFixed(0)}%`}>
-            QA {(qa_score * 100).toFixed(0)}%
+    <section className="script-shell fade-up">
+      <div className="script-shell-head">
+        <div className="script-shell-title">
+          <FileText size={18} />
+          <div>
+            <p className="script-kicker">Structured output</p>
+            <h2>{script.source_title}</h2>
           </div>
         </div>
-        <div className="sp-meta-row">
-          <span className="sp-overall-hl">{overall_headline}</span>
+        <button type="button" className="json-toggle" onClick={() => setShowJson((value) => !value)}>
+          {showJson ? 'Hide JSON' : 'Show JSON'}
+        </button>
+      </div>
+
+      <div className="script-shell-meta">
+        <span>Article URL: {script.article_url}</span>
+        <span>Runtime: {script.video_duration_sec}s</span>
+        <span>QA: {(script.qa_score * 100).toFixed(0)}%</span>
+        <span>Extractor: {script.article?.extraction_method}</span>
+      </div>
+
+      <div className="screenplay-block">
+        <div className="script-block-title">Human-readable screenplay</div>
+        <pre>{script.screenplay_text}</pre>
+      </div>
+
+      <div className="script-side-grid">
+        <div className="screenplay-block">
+          <div className="script-block-title script-block-title--with-icon">
+            <Rows3 size={14} /> Editorial rundown
+          </div>
+          <div className="rundown-list">
+            {(script.rundown || []).map((item) => (
+              <div key={item.segment_id} className="rundown-item">
+                <strong>{item.slug}</strong>
+                <p>{item.start_timecode} - {item.end_timecode}</p>
+                <span>{item.lower_third}</span>
+              </div>
+            ))}
+          </div>
         </div>
-        <div className="sp-article-meta">
-          <span>📰 {article?.source_domain}</span>
-          {article?.authors?.length > 0 && <span>✍️ {article.authors.join(', ')}</span>}
-          <span>📊 {article?.word_count} words</span>
-          <span>🔬 via {article?.extraction_method}</span>
+
+        <div className="screenplay-block">
+          <div className="script-block-title script-block-title--with-icon">
+            <Captions size={14} /> Live transcript cues
+          </div>
+          <div className="transcript-list">
+            {(script.live_transcript || []).map((cue) => (
+              <div key={cue.id} className="transcript-item">
+                <span>{cue.start_timecode}</span>
+                <p>{cue.text}</p>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="sp-segments">
-        {segments.map((seg, i) => (
-          <SegmentCard key={i} segment={seg} index={i} />
+      <div className="script-card-list">
+        {script.segments.map((segment, index) => (
+          <SegmentCard
+            key={segment.segment_id ?? index}
+            segment={segment}
+            defaultOpen={index === 0}
+          />
         ))}
       </div>
 
+      {showJson && (
+        <div className="json-block">
+          <div className="script-block-title">Structured JSON</div>
+          <pre>{jsonPreview}</pre>
+        </div>
+      )}
+
       <style>{`
-        .sp-wrapper { display: flex; flex-direction: column; gap: 20px; }
-        .sp-header {
-          glass: var(--bg-glass);
-          background: var(--bg-card);
-          border: 1px solid var(--border-subtle);
-          border-radius: var(--radius-lg);
-          padding: 22px 24px;
-          display: flex; flex-direction: column; gap: 12px;
+        .script-shell {
+          display: flex;
+          flex-direction: column;
+          gap: 18px;
         }
-        .sp-title-row { display: flex; align-items: center; gap: 10px; }
-        .sp-icon { color: var(--accent-blue); }
-        .sp-title { font-size: 17px; font-weight: 700; flex: 1; }
-        .qa-badge {
-          font-size: 11px; font-weight: 700; padding: 4px 10px;
-          border-radius: var(--radius-full);
-          background: rgba(16,185,129,0.15); color: var(--accent-green);
-          border: 1px solid rgba(16,185,129,0.3);
+        .script-shell-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          flex-wrap: wrap;
         }
-        .sp-meta-row {}
-        .sp-overall-hl {
-          font-size: 20px; font-weight: 800;
-          background: var(--gradient-primary);
-          -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        .script-shell-title {
+          display: flex;
+          gap: 12px;
+          align-items: center;
         }
-        .sp-article-meta {
-          display: flex; flex-wrap: wrap; gap: 14px;
-          font-size: 12px; color: rgba(255,255,255,0.4);
+        .script-kicker {
+          font-size: 11px;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.42);
+          margin-bottom: 4px;
         }
-        .sp-segments { display: flex; flex-direction: column; gap: 10px; }
+        .script-shell-title h2 {
+          font-size: 24px;
+          line-height: 1.2;
+        }
+        .json-toggle {
+          border: 1px solid rgba(59,130,246,0.3);
+          background: rgba(59,130,246,0.1);
+          color: #bfdbfe;
+          border-radius: 999px;
+          padding: 10px 14px;
+          cursor: pointer;
+          font-weight: 700;
+        }
+        .script-shell-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+        }
+        .script-shell-meta span {
+          font-size: 12px;
+          color: rgba(255,255,255,0.64);
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.06);
+          border-radius: 999px;
+          padding: 6px 10px;
+        }
+        .screenplay-block,
+        .json-block {
+          background: rgba(10, 14, 24, 0.88);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 20px;
+          padding: 18px;
+        }
+        .script-block-title {
+          font-size: 12px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.34);
+          margin-bottom: 12px;
+        }
+        .script-block-title--with-icon {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .screenplay-block pre,
+        .json-block pre {
+          margin: 0;
+          white-space: pre-wrap;
+          word-break: break-word;
+          font-size: 12px;
+          line-height: 1.7;
+          color: rgba(255,255,255,0.82);
+          font-family: var(--font-mono);
+        }
+        .script-card-list {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .script-side-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 14px;
+        }
+        .rundown-list,
+        .transcript-list {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          max-height: 340px;
+          overflow: auto;
+          padding-right: 6px;
+        }
+        .rundown-item,
+        .transcript-item {
+          display: grid;
+          gap: 6px;
+          padding: 12px 14px;
+          border-radius: 14px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.06);
+        }
+        .rundown-item strong {
+          font-size: 14px;
+          color: rgba(255,255,255,0.9);
+        }
+        .rundown-item p,
+        .transcript-item span {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: rgba(255,255,255,0.42);
+        }
+        .rundown-item span,
+        .transcript-item p {
+          font-size: 13px;
+          line-height: 1.6;
+          color: rgba(255,255,255,0.76);
+        }
+        @media (max-width: 860px) {
+          .script-side-grid {
+            grid-template-columns: 1fr;
+          }
+        }
       `}</style>
-    </div>
+    </section>
   )
 }

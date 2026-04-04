@@ -1,25 +1,147 @@
 """
-models.py — Pydantic schemas for request/response
+models.py — Pydantic schemas for request/response and broadcast workflow data.
 """
-from pydantic import BaseModel, HttpUrl, Field
-from typing import Optional, List
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
 
 
 class GenerateRequest(BaseModel):
     article_url: str = Field(..., description="Public news article URL to process")
-    use_gemini: Optional[bool] = Field(True, description="Whether to use Gemini for narration refinement")
-    max_segments: Optional[int] = Field(8, ge=2, le=20, description="Max number of video segments")
+    use_gemini: Optional[bool] = Field(
+        True,
+        description="Whether to use Gemini for editorial refinement",
+    )
+    max_segments: Optional[int] = Field(
+        6,
+        ge=4,
+        le=12,
+        description="Max number of screenplay/video segments including intro and close",
+    )
+
+
+class ExtractionCandidate(BaseModel):
+    method: str
+    score: float
+    title: str = ""
+    word_count: int = 0
+    image_count: int = 0
+    selected: bool = False
+
+
+class AgentArtifact(BaseModel):
+    label: str
+    value: Any
+    kind: str = "text"
+
+
+class AgentTrace(BaseModel):
+    key: str
+    name: str
+    role: str
+    status: str
+    progress: int = 0
+    summary: str = ""
+    retry_count: int = 0
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    branch: Optional[str] = None
+    outputs: List[AgentArtifact] = Field(default_factory=list)
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    updated_at: Optional[float] = None
+
+
+class ReviewCriterion(BaseModel):
+    key: str
+    label: str
+    score: int
+    max_score: int = 5
+    reason: str
+
+
+class QAReview(BaseModel):
+    passed: bool
+    overall_average: float
+    retry_rounds: int = 0
+    retry_decision: str = "finalize"
+    weak_segments: List[int] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+    criteria: List[ReviewCriterion] = Field(default_factory=list)
+
+
+class TranscriptCue(BaseModel):
+    id: str
+    segment_id: int
+    start_time: float
+    end_time: float
+    start_timecode: str
+    end_timecode: str
+    text: str
+    speaker: str = "anchor"
+    emphasis: str = ""
+    lane: str = "program"
+
+
+class RundownCue(BaseModel):
+    segment_id: int
+    slug: str
+    start_timecode: str
+    end_timecode: str
+    editorial_focus: str
+    lower_third: str
+    ticker_text: str
+    camera_motion: str
+    visual_source_kind: str
+    control_room_cue: str
+    director_note: str
 
 
 class Segment(BaseModel):
+    segment_id: int
     index: int
-    start_time: float          # seconds
+    segment_type: str
+    start_time: float
     end_time: float
-    headline: str
-    narration: str
+    start_timecode: str
+    end_timecode: str
+    duration: float
+    layout: str
+    anchor_narration: str
+    main_headline: str
+    subheadline: str
+    top_tag: str
+    left_panel: str
+    right_panel: str
+    source_text: str
+    source_excerpt: str
+    source_image_url: Optional[str] = None
+    ai_support_visual_prompt: Optional[str] = None
+    transition: str
+    story_beat: str = ""
+    editorial_focus: str = ""
+    lower_third: str = ""
+    ticker_text: str = ""
+    camera_motion: str = ""
+    visual_source_kind: str = ""
+    visual_confidence: float = 0.0
+    control_room_cue: str = ""
+    director_note: str = ""
+    source_visual_used: bool = False
+    scene_image_url: Optional[str] = None
+    scene_image_path: Optional[str] = None
+    support_image_path: Optional[str] = None
     image_url: Optional[str] = None
     image_path: Optional[str] = None
-    visual_prompt: str
+    visual_prompt: str = ""
+    headline_reason: str = ""
+    visual_rationale: str = ""
+    factual_points: List[str] = Field(default_factory=list)
+    headline: str = ""
+    narration: str = ""
+    transcript_cues: List[TranscriptCue] = Field(default_factory=list)
 
 
 class ArticleData(BaseModel):
@@ -27,26 +149,38 @@ class ArticleData(BaseModel):
     text: str
     url: str
     top_image: Optional[str] = None
-    images: List[str] = []
-    authors: List[str] = []
+    images: List[str] = Field(default_factory=list)
+    authors: List[str] = Field(default_factory=list)
     published_date: Optional[str] = None
     source_domain: str
     word_count: int
-    extraction_method: str  # newspaper3k | readability | beautifulsoup
+    extraction_method: str
+    extraction_score: float = 0.0
+    extraction_candidates: List[ExtractionCandidate] = Field(default_factory=list)
 
 
 class Script(BaseModel):
+    article_url: str
+    source_title: str
     article: ArticleData
     segments: List[Segment]
+    live_transcript: List[TranscriptCue] = Field(default_factory=list)
+    rundown: List[RundownCue] = Field(default_factory=list)
     total_duration: float
+    video_duration_sec: int
     overall_headline: str
+    screenplay_text: str
     qa_score: float
+    review: Optional[QAReview] = None
+    workflow_overview: Dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerateResponse(BaseModel):
     success: bool
     job_id: str
     script: Optional[Script] = None
+    agents: List[AgentTrace] = Field(default_factory=list)
+    activity_log: List[str] = Field(default_factory=list)
     video_path: Optional[str] = None
     video_url: Optional[str] = None
     error: Optional[str] = None
@@ -55,7 +189,11 @@ class GenerateResponse(BaseModel):
 
 class JobStatusResponse(BaseModel):
     job_id: str
-    status: str   # pending | processing | done | failed
-    progress: int  # 0-100
+    status: str
+    progress: int
     message: str
+    agents: List[AgentTrace] = Field(default_factory=list)
+    activity_log: List[str] = Field(default_factory=list)
+    workflow_overview: Dict[str, Any] = Field(default_factory=dict)
+    review: Optional[QAReview] = None
     result: Optional[GenerateResponse] = None

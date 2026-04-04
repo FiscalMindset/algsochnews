@@ -5,7 +5,6 @@ Combines images + audio segments, adds transitions, outputs final MP4.
 
 import json
 import subprocess
-from functools import lru_cache
 from pathlib import Path
 from typing import List
 from backend.utils import get_logger, config
@@ -36,18 +35,78 @@ def _get_audio_duration(audio_path: Path) -> float:
     return 5.0  # safe default
 
 
-@lru_cache(maxsize=1)
-def _supports_drawtext() -> bool:
-    """Return True when the local ffmpeg build exposes the drawtext filter."""
+def _get_media_duration(path: Path) -> float:
+    """Probe container duration via ffprobe."""
     try:
         result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-h", "filter=drawtext"],
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
             capture_output=True,
             text=True,
+            check=True,
         )
-        return "Unknown filter" not in result.stdout + result.stderr
-    except Exception:
-        return False
+        return float(result.stdout.strip())
+    except Exception as e:
+        log.warning(f"ffprobe duration failed: {e}")
+    return 5.0
+
+
+def _motion_filter(style: str, duration: float) -> str:
+    frames = max(1, int(duration * config.VIDEO_FPS))
+    base = f"d={frames}:s={config.VIDEO_WIDTH}x{config.VIDEO_HEIGHT}:fps={config.VIDEO_FPS}"
+    style = (style or "").lower()
+
+    if style == "drift_left":
+        return (
+            "zoompan="
+            "z='min(zoom+0.00055,1.08)':"
+            "x='max(0,iw/2-(iw/zoom/2)-on*0.35)':"
+            "y='ih/2-(ih/zoom/2)':"
+            f"{base}"
+        )
+    if style == "drift_right":
+        return (
+            "zoompan="
+            "z='min(zoom+0.00055,1.08)':"
+            "x='min(iw-iw/zoom,iw/2-(iw/zoom/2)+on*0.35)':"
+            "y='ih/2-(ih/zoom/2)':"
+            f"{base}"
+        )
+    if style == "rise":
+        return (
+            "zoompan="
+            "z='min(zoom+0.0006,1.09)':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='max(0,ih/2-(ih/zoom/2)-on*0.28)':"
+            f"{base}"
+        )
+    if style == "pull_back":
+        return (
+            "zoompan="
+            "z='if(eq(on,1),1.08,max(1.0,zoom-0.00045))':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='ih/2-(ih/zoom/2)':"
+            f"{base}"
+        )
+    if style == "steady":
+        return (
+            "zoompan="
+            "z='1.02':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='ih/2-(ih/zoom/2)':"
+            f"{base}"
+        )
+    return (
+        "zoompan="
+        "z='min(zoom+0.00075,1.12)':"
+        "x='iw/2-(iw/zoom/2)':"
+        "y='ih/2-(ih/zoom/2)':"
+        f"{base}"
+    )
 
 
 def _render_segment(
@@ -59,81 +118,25 @@ def _render_segment(
     segment_type: str,
     index: int,
     overall_headline: str,
+    motion_style: str,
 ) -> Path:
     """
-    Render a single segment: image + audio + overlay text → MP4 clip.
+    Render a single segment: composed scene image + audio → MP4 clip.
     """
     duration = _get_audio_duration(audio_path)
 
     W = config.VIDEO_WIDTH
     H = config.VIDEO_HEIGHT
 
-    # Build drawtext filters
-    # Escape special chars for FFmpeg
-    def esc(t: str) -> str:
-        return (
-            t.replace("\\", "\\\\")
-             .replace("'", "\\'")
-             .replace(":", "\\:")
-             .replace(",", "\\,")
-             .replace("[", "\\[")
-             .replace("]", "\\]")
-        )
-
-    safe_headline = esc(headline[:60])
-    safe_overall = esc(overall_headline[:50])
-
-    # Ticker bar: overall headline scrolling
-    ticker_speed = 80  # pixels per second
-    ticker_start_x = W
-    ticker_text_width_est = len(overall_headline) * 14
-    ticker_end_x = -(ticker_text_width_est + 50)
-
-    # Subtitle bar narration (first 80 chars)
-    short_narration = esc(narration[:90] + ("…" if len(narration) > 90 else ""))
-
-    # Segment label
-    label = {"intro": "LIVE", "outro": "RECAP"}.get(segment_type, f"SEG {index+1}")
-
     vf_filters = [
-        # Ken Burns zoom
         f"scale={W}:{H}:force_original_aspect_ratio=increase",
         f"crop={W}:{H}",
-        f"zoompan=z='min(zoom+0.0008,1.1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-        f"d={int(duration * config.VIDEO_FPS)}:s={W}x{H}:fps={config.VIDEO_FPS}",
-        # Fade in / fade out
+        _motion_filter(motion_style, duration),
         f"fade=t=in:st=0:d=0.5",
         f"fade=t=out:st={max(0, duration - 0.5):.2f}:d=0.5",
+        "eq=contrast=1.04:saturation=1.1:brightness=0.02",
+        "unsharp=5:5:0.7:5:5:0.0",
     ]
-
-    if _supports_drawtext():
-        vf_filters.extend([
-            # Bottom ticker band background
-            f"drawbox=x=0:y={H-80}:w={W}:h=80:color=0x0A0A1E@0.92:t=fill",
-            # Red BREAKING label box
-            f"drawbox=x=0:y={H-80}:w=200:h=80:color=0xC81E1E@1.0:t=fill",
-            # BREAKING text
-            f"drawtext=text='{label}':fontsize=22:fontcolor=white:"
-            f"x=12:y={H-80+26}:shadowcolor=black:shadowx=1:shadowy=1",
-            # Scrolling headline ticker
-            f"drawtext=text='{safe_overall}':fontsize=24:fontcolor=0xFFDC32:"
-            f"x='({W}-t*{ticker_speed})':y={H-80+22}:shadowcolor=black:shadowx=1:shadowy=1:"
-            f"enable='gte(t,0)'",
-            # Top headline bar
-            f"drawbox=x=0:y=0:w={W}:h=72:color=0x0B0F1A@0.85:t=fill",
-            f"drawtext=text='{safe_headline}':fontsize=30:fontcolor=white:"
-            f"x=20:y=20:shadowcolor=black:shadowx=2:shadowy=2",
-            # Subtitle narration at bottom above ticker
-            f"drawbox=x=0:y={H-140}:w={W}:h=56:color=0x000000@0.55:t=fill",
-            f"drawtext=text='{short_narration}':fontsize=18:fontcolor=0xE0E0E0:"
-            f"x=14:y={H-130}:shadowcolor=black:shadowx=1:shadowy=1",
-        ])
-    else:
-        log.warning("FFmpeg drawtext filter is unavailable; rendering video without text overlays.")
-        vf_filters.extend([
-            f"drawbox=x=0:y=0:w={W}:h=72:color=0x0B0F1A@0.45:t=fill",
-            f"drawbox=x=0:y={H-80}:w={W}:h=80:color=0x0A0A1E@0.55:t=fill",
-        ])
 
     vf = ",".join(vf_filters)
 
@@ -167,7 +170,7 @@ def _render_segment(
     return output_path
 
 
-def _concat_segments(segment_paths: List[Path], output_path: Path) -> Path:
+def _basic_concat_segments(segment_paths: List[Path], output_path: Path) -> Path:
     """Concatenate rendered MP4 clips using FFmpeg concat demuxer."""
     # Write concat list file
     concat_file = output_path.parent / "concat_list.txt"
@@ -198,6 +201,77 @@ def _concat_segments(segment_paths: List[Path], output_path: Path) -> Path:
     concat_file.unlink(missing_ok=True)
     log.info(f"Final video: {output_path}")
     return output_path
+
+
+def _transition_name(name: str) -> str:
+    mapping = {
+        "cut": "fade",
+        "crossfade": "fade",
+        "slide": "slideleft",
+        "fade_out": "fadeblack",
+    }
+    return mapping.get((name or "").lower(), "fade")
+
+
+def _concat_segments(segment_paths: List[Path], transitions: List[str], output_path: Path) -> Path:
+    """
+    Concatenate clips using xfade/acrossfade when available, otherwise fall back
+    to the concat demuxer.
+    """
+    if len(segment_paths) <= 1:
+        return _basic_concat_segments(segment_paths, output_path)
+
+    durations = [_get_media_duration(path) for path in segment_paths]
+    cmd = ["ffmpeg", "-y"]
+    for path in segment_paths:
+        cmd.extend(["-i", str(path)])
+
+    filter_parts = []
+    video_label = "[0:v]"
+    audio_label = "[0:a]"
+    offset = durations[0]
+
+    for index in range(1, len(segment_paths)):
+        transition = _transition_name(transitions[index - 1] if index - 1 < len(transitions) else "crossfade")
+        duration = 0.15 if transition == "fade" and (transitions[index - 1] if index - 1 < len(transitions) else "") == "cut" else 0.55
+        if transition == "fadeblack":
+            duration = 0.65
+        offset = max(0.0, offset - duration)
+        next_video = f"[v{index}]"
+        next_audio = f"[a{index}]"
+        filter_parts.append(
+            f"{video_label}[{index}:v]xfade=transition={transition}:duration={duration}:offset={offset}{next_video}"
+        )
+        filter_parts.append(
+            f"{audio_label}[{index}:a]acrossfade=d={duration}:c1=tri:c2=tri{next_audio}"
+        )
+        video_label = next_video
+        audio_label = next_audio
+        offset += durations[index]
+
+    cmd.extend(
+        [
+            "-filter_complex", ";".join(filter_parts),
+            "-map", video_label,
+            "-map", audio_label,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "22",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+    )
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode == 0:
+        log.info(f"Final video with transitions: {output_path}")
+        return output_path
+
+    log.warning(f"Transition concat failed, falling back to basic concat.\n{result.stderr[-1200:]}")
+    return _basic_concat_segments(segment_paths, output_path)
 
 
 def render_video(
@@ -237,11 +311,13 @@ def render_video(
             segment_type=seg["segment_type"],
             index=i,
             overall_headline=overall_headline,
+            motion_style=vis.get("camera_motion", "push_in"),
         )
         clip_paths.append(clip_out)
 
     final_path = output_dir / "final_video.mp4"
     log.info(f"Concatenating {len(clip_paths)} clips…")
-    _concat_segments(clip_paths, final_path)
+    transitions = [visual.get("transition", "crossfade") for visual in visuals]
+    _concat_segments(clip_paths, transitions, final_path)
 
     return final_path
