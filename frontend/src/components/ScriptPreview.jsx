@@ -167,7 +167,7 @@ function SegmentCard({ segment, defaultOpen = false }) {
 }
 
 export default function ScriptPreview({ script }) {
-  const [showJson, setShowJson] = useState(false)
+  const [viewMode, setViewMode] = useState('screenplay')
   const jsonPreview = useMemo(() => JSON.stringify(script, null, 2), [script])
 
   if (!script) return null
@@ -182,9 +182,22 @@ export default function ScriptPreview({ script }) {
             <h2>{script.source_title}</h2>
           </div>
         </div>
-        <button type="button" className="json-toggle" onClick={() => setShowJson((value) => !value)}>
-          {showJson ? 'Hide JSON' : 'Show JSON'}
-        </button>
+        <div className="preview-toggle">
+          <button
+            type="button"
+            className={`json-toggle ${viewMode === 'screenplay' ? 'json-toggle--active' : ''}`}
+            onClick={() => setViewMode('screenplay')}
+          >
+            Screenplay
+          </button>
+          <button
+            type="button"
+            className={`json-toggle ${viewMode === 'json' ? 'json-toggle--active' : ''}`}
+            onClick={() => setViewMode('json')}
+          >
+            JSON
+          </button>
+        </div>
       </div>
 
       <div className="script-shell-meta">
@@ -194,53 +207,55 @@ export default function ScriptPreview({ script }) {
         <span>Extractor: {script.article?.extraction_method}</span>
       </div>
 
-      <div className="screenplay-block">
-        <div className="script-block-title">Human-readable screenplay</div>
-        <pre>{script.screenplay_text}</pre>
-      </div>
-
-      <div className="script-side-grid">
-        <div className="screenplay-block">
-          <div className="script-block-title script-block-title--with-icon">
-            <Rows3 size={14} /> Editorial rundown
+      {viewMode === 'screenplay' ? (
+        <>
+          <div className="screenplay-block">
+            <div className="script-block-title">Human-readable screenplay</div>
+            <pre>{script.screenplay_text}</pre>
           </div>
-          <div className="rundown-list">
-            {(script.rundown || []).map((item) => (
-              <div key={item.segment_id} className="rundown-item">
-                <strong>{item.slug}</strong>
-                <p>{item.start_timecode} - {item.end_timecode}</p>
-                <span>{item.lower_third}</span>
+
+          <div className="script-side-grid">
+            <div className="screenplay-block">
+              <div className="script-block-title script-block-title--with-icon">
+                <Rows3 size={14} /> Editorial rundown
               </div>
+              <div className="rundown-list">
+                {(script.rundown || []).map((item) => (
+                  <div key={item.segment_id} className="rundown-item">
+                    <strong>{item.slug}</strong>
+                    <p>{item.start_timecode} - {item.end_timecode}</p>
+                    <span>{item.lower_third}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="screenplay-block">
+              <div className="script-block-title script-block-title--with-icon">
+                <Captions size={14} /> Live transcript cues
+              </div>
+              <div className="transcript-list">
+                {(script.live_transcript || []).map((cue) => (
+                  <div key={cue.id} className="transcript-item">
+                    <span>{cue.start_timecode}</span>
+                    <p>{cue.text}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="script-card-list">
+            {script.segments.map((segment, index) => (
+              <SegmentCard
+                key={segment.segment_id ?? index}
+                segment={segment}
+                defaultOpen={index === 0}
+              />
             ))}
           </div>
-        </div>
-
-        <div className="screenplay-block">
-          <div className="script-block-title script-block-title--with-icon">
-            <Captions size={14} /> Live transcript cues
-          </div>
-          <div className="transcript-list">
-            {(script.live_transcript || []).map((cue) => (
-              <div key={cue.id} className="transcript-item">
-                <span>{cue.start_timecode}</span>
-                <p>{cue.text}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="script-card-list">
-        {script.segments.map((segment, index) => (
-          <SegmentCard
-            key={segment.segment_id ?? index}
-            segment={segment}
-            defaultOpen={index === 0}
-          />
-        ))}
-      </div>
-
-      {showJson && (
+        </>
+      ) : (
         <div className="json-block">
           <div className="script-block-title">Structured JSON</div>
           <pre>{jsonPreview}</pre>
@@ -284,6 +299,16 @@ export default function ScriptPreview({ script }) {
           padding: 10px 14px;
           cursor: pointer;
           font-weight: 700;
+        }
+        .preview-toggle {
+          display: inline-flex;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .json-toggle--active {
+          background: rgba(239,68,68,0.14);
+          border-color: rgba(239,68,68,0.34);
+          color: #fecaca;
         }
         .script-shell-meta {
           display: flex;

@@ -1,6 +1,7 @@
 """
 utils.py — Shared helpers, logging, config loader
 """
+import html
 import os
 import re
 import uuid
@@ -66,9 +67,16 @@ def url_to_filename(url: str) -> str:
 
 
 def sanitize_text(text: str) -> str:
-    """Remove excessive whitespace and special chars from text."""
+    """Normalize extracted article text and strip common HTML / entity noise."""
+    text = html.unescape(text or "")
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = text.replace("’", "'").replace("“", '"').replace("”", '"').replace("–", "-").replace("—", "-")
+    text = re.sub(r"\b(?:nbsp|amp|quot)\b", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"[^\w\s.,!?;:\-'\"]", " ", text)
+    text = re.sub(r"\b(?:lt|gt)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 

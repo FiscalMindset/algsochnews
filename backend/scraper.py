@@ -214,6 +214,11 @@ def _score(result: dict) -> float:
     alpha = sum(c.isalpha() or c.isspace() for c in text)
     noise_score = alpha / max(len(text), 1)
 
+    # penalty for leftover markup / CMS junk
+    lower = text.lower()
+    junk_hits = sum(lower.count(token) for token in (" href ", " src ", " cookie ", " subscribe ", " javascript "))
+    markup_penalty = min(junk_hits * 0.03, 0.18)
+
     # metadata bonus
     meta_score = 0.0
     if result.get("title"):
@@ -230,7 +235,7 @@ def _score(result: dict) -> float:
         result.get("method", ""), 0.0
     )
 
-    score = 0.5 * length_score + 0.3 * noise_score + 0.1 * meta_score + 0.1 * method_bonus
+    score = 0.5 * length_score + 0.3 * noise_score + 0.1 * meta_score + 0.1 * method_bonus - markup_penalty
     return round(min(score, 1.0), 4)
 
 
@@ -288,6 +293,7 @@ def scrape_article(url: str) -> dict:
         log.info(f"Article truncated to {config.MAX_ARTICLE_LENGTH // 5} words")
 
     best["text"] = sanitize_text(best["text"])
+    best["title"] = sanitize_text(best.get("title", ""))
     best["url"] = url
     best["source_domain"] = extract_domain(url)
     best["word_count"] = len(best["text"].split())
