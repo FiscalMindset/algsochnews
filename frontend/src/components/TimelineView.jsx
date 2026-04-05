@@ -9,8 +9,39 @@ function pct(value, total) {
   return `${((value / Math.max(total, 1)) * 100).toFixed(2)}%`
 }
 
+function getActiveSegment(segments = [], currentTime = 0) {
+  return (
+    segments.find((segment) => currentTime >= segment.start_time && currentTime <= segment.end_time) ||
+    segments[0] ||
+    null
+  )
+}
+
+function markerTimes(segments = [], totalDuration = 0) {
+  const times = [0, totalDuration]
+  for (const segment of segments) {
+    times.push(Number(segment.start_time || 0))
+    times.push(Number(segment.end_time || 0))
+  }
+
+  const minGap = Math.max(totalDuration / 12, 3)
+  const sorted = [...new Set(times.filter(Number.isFinite))].sort((a, b) => a - b)
+  const collapsed = []
+  for (const value of sorted) {
+    if (!collapsed.length || value - collapsed[collapsed.length - 1] >= minGap || value === totalDuration) {
+      collapsed.push(value)
+    }
+  }
+  return collapsed
+}
+
 export default function TimelineView({ segments = [], totalDuration = 0, currentTime = 0 }) {
   if (!segments.length) return null
+
+  const safeDuration = Math.max(Number(totalDuration || 0), Number(segments[segments.length - 1]?.end_time || 0), 1)
+  const activeSegment = getActiveSegment(segments, currentTime)
+  const playbackPct = Math.max(0, Math.min(100, (Number(currentTime || 0) / safeDuration) * 100))
+  const markers = markerTimes(segments, safeDuration)
 
   return (
     <section className="timeline-shell fade-up">
@@ -25,8 +56,43 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
         </div>
         <div className="timeline-meta">
           <span>{segments.length} segments</span>
-          <span>{fmt(totalDuration)} total</span>
+          <span>{fmt(safeDuration)} total</span>
+          <span>playhead {playbackPct.toFixed(1)}%</span>
         </div>
+      </div>
+
+      <article className="timeline-live-summary">
+        <div className="timeline-live-top">
+          <span>Now playing</span>
+          <strong>{activeSegment?.start_timecode} - {activeSegment?.end_timecode}</strong>
+        </div>
+        <h3>{activeSegment?.main_headline}</h3>
+        <p>{activeSegment?.subheadline}</p>
+        <div className="timeline-live-chips">
+          <span>{activeSegment?.layout || 'layout n/a'}</span>
+          <span>{activeSegment?.camera_motion || 'motion n/a'}</span>
+          <span>{activeSegment?.transition || 'transition n/a'}</span>
+          <span>{activeSegment?.visual_source_kind || 'visual source n/a'}</span>
+        </div>
+        <div className="timeline-live-note">
+          {activeSegment?.control_room_cue || activeSegment?.director_note || activeSegment?.editorial_focus || 'Awaiting active direction cues.'}
+        </div>
+      </article>
+
+      <div className="timeline-segment-rail">
+        {segments.map((segment, index) => {
+          const isActive = currentTime >= segment.start_time && currentTime <= segment.end_time
+          return (
+            <div
+              key={`rail-${segment.segment_id}`}
+              className={`timeline-segment-pill ${isActive ? 'timeline-segment-pill--active' : ''}`}
+            >
+              <strong>{index + 1}</strong>
+              <span>{segment.main_headline}</span>
+              <em>{segment.start_timecode} - {segment.end_timecode}</em>
+            </div>
+          )
+        })}
       </div>
 
       <div className="timeline-track">
@@ -35,28 +101,30 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
             key={segment.segment_id}
             className={`timeline-bar ${currentTime >= segment.start_time && currentTime <= segment.end_time ? 'timeline-bar--active' : ''}`}
             style={{
-              left: pct(segment.start_time, totalDuration),
-              width: pct(segment.end_time - segment.start_time, totalDuration),
+              left: pct(segment.start_time, safeDuration),
+              width: pct(segment.end_time - segment.start_time, safeDuration),
             }}
             title={`${segment.main_headline} · ${segment.start_timecode} - ${segment.end_timecode}`}
           >
             <span>{segment.segment_id}</span>
           </div>
         ))}
-        <div className="timeline-playhead" style={{ left: pct(currentTime, totalDuration) }} />
+        <div className="timeline-playhead" style={{ left: pct(currentTime, safeDuration) }} />
       </div>
 
       <div className="timeline-markers">
-        {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
-          <span key={ratio} style={{ left: `${ratio * 100}%` }}>{fmt(totalDuration * ratio)}</span>
+        {markers.map((value) => (
+          <span key={`marker-${value}`} style={{ left: pct(value, safeDuration) }}>{fmt(value)}</span>
         ))}
       </div>
 
       <div className="timeline-grid">
-        {segments.map((segment) => (
+        {segments.map((segment, index) => {
+          const isActive = currentTime >= segment.start_time && currentTime <= segment.end_time
+          return (
           <article
             key={segment.segment_id}
-            className={`timeline-card ${currentTime >= segment.start_time && currentTime <= segment.end_time ? 'timeline-card--active' : ''}`}
+            className={`timeline-card ${isActive ? 'timeline-card--active' : ''}`}
           >
             <div className="timeline-card-media">
               {segment.html_frame_url ? (
@@ -74,7 +142,7 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
             </div>
             <div className="timeline-card-body">
               <div className="timeline-card-top">
-                <span className="timeline-tag">{segment.top_tag}</span>
+                <span className="timeline-tag">#{index + 1} · {segment.top_tag}</span>
                 <span className="timeline-time">{segment.start_timecode} - {segment.end_timecode}</span>
               </div>
               <h3>{segment.main_headline}</h3>
@@ -107,6 +175,12 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
                 <span>Right panel</span>
                 <strong>{segment.right_panel}</strong>
               </div>
+              {segment.control_room_cue && (
+                <div className="timeline-detail-row">
+                  <span>Control cue</span>
+                  <strong>{segment.control_room_cue}</strong>
+                </div>
+              )}
               {segment.html_frame_url && (
                 <div className="timeline-detail-row">
                   <span>HTML frame</span>
@@ -115,7 +189,7 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
               )}
             </div>
           </article>
-        ))}
+        )})}
       </div>
 
       <style>{`
@@ -168,6 +242,100 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
           border-radius: 999px;
           padding: 6px 10px;
         }
+        .timeline-live-summary {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          border-radius: 20px;
+          padding: 16px 18px;
+          background: linear-gradient(160deg, rgba(17,25,44,0.9), rgba(8,12,22,0.9));
+          border: 1px solid rgba(59,130,246,0.22);
+        }
+        .timeline-live-top {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          flex-wrap: wrap;
+          align-items: center;
+        }
+        .timeline-live-top span {
+          font-size: 11px;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.48);
+        }
+        .timeline-live-top strong {
+          font-size: 14px;
+          color: #dbeafe;
+          font-family: var(--font-mono);
+        }
+        .timeline-live-summary h3 {
+          font-size: 24px;
+          line-height: 1.15;
+        }
+        .timeline-live-summary p {
+          font-size: 14px;
+          line-height: 1.7;
+          color: rgba(255,255,255,0.7);
+        }
+        .timeline-live-chips {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .timeline-live-chips span {
+          font-size: 11px;
+          color: rgba(255,255,255,0.74);
+          border-radius: 999px;
+          padding: 5px 9px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(255,255,255,0.05);
+        }
+        .timeline-live-note {
+          font-size: 13px;
+          line-height: 1.7;
+          color: rgba(219,234,254,0.9);
+          border-radius: 14px;
+          padding: 10px 12px;
+          background: rgba(59,130,246,0.1);
+          border: 1px solid rgba(59,130,246,0.18);
+        }
+        .timeline-segment-rail {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: 10px;
+        }
+        .timeline-segment-pill {
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+          border-radius: 14px;
+          padding: 10px 12px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.08);
+        }
+        .timeline-segment-pill--active {
+          border-color: rgba(239,68,68,0.34);
+          background: rgba(239,68,68,0.08);
+          box-shadow: inset 0 0 0 1px rgba(239,68,68,0.15);
+        }
+        .timeline-segment-pill strong {
+          font-size: 11px;
+          color: rgba(255,255,255,0.86);
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+        .timeline-segment-pill span {
+          font-size: 12px;
+          line-height: 1.5;
+          color: rgba(255,255,255,0.72);
+        }
+        .timeline-segment-pill em {
+          font-size: 11px;
+          color: rgba(255,255,255,0.5);
+          font-style: normal;
+          font-family: var(--font-mono);
+        }
         .timeline-track {
           position: relative;
           height: 42px;
@@ -190,6 +358,13 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
           font-weight: 800;
           border: 1px solid rgba(255,255,255,0.18);
           min-width: 34px;
+        }
+        .timeline-bar span {
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+          max-width: 100%;
+          padding: 0 6px;
         }
         .timeline-bar--active {
           background: linear-gradient(90deg, rgba(239,68,68,0.92), rgba(251,191,36,0.92));
@@ -316,6 +491,9 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
           font-weight: 600;
         }
         @media (max-width: 980px) {
+          .timeline-live-summary h3 {
+            font-size: 20px;
+          }
           .timeline-grid {
             grid-template-columns: 1fr;
           }

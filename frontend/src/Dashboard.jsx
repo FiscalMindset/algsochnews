@@ -139,6 +139,25 @@ export default function Dashboard() {
             </section>
           )}
 
+          {script && (
+            <section className="production-suite fade-up fade-up-delay-1">
+              <LiveControlRoom script={script} currentTime={currentTime} />
+              {script?.segments && (
+                <TimelineView
+                  segments={script.segments}
+                  totalDuration={script.total_duration}
+                  currentTime={currentTime}
+                />
+              )}
+            </section>
+          )}
+
+          {script && (
+            <section className="fade-up fade-up-delay-2">
+              <ScriptPreview script={script} />
+            </section>
+          )}
+
           <AgentWorkflowPanel
             agents={result.agents || agents}
             activityLog={result.activity_log || activityLog}
@@ -147,28 +166,6 @@ export default function Dashboard() {
             workflowOverview={script?.workflow_overview || workflowOverview}
             modelVerification={script?.model_verification || result.model_verification || modelVerification}
           />
-
-          {script && (
-            <section className="fade-up fade-up-delay-1">
-              <LiveControlRoom script={script} currentTime={currentTime} />
-            </section>
-          )}
-
-          {script?.segments && (
-            <section className="fade-up fade-up-delay-2">
-              <TimelineView
-                segments={script.segments}
-                totalDuration={script.total_duration}
-                currentTime={currentTime}
-              />
-            </section>
-          )}
-
-          {script && (
-            <section className="fade-up fade-up-delay-3">
-              <ScriptPreview script={script} />
-            </section>
-          )}
         </>
       )}
 
@@ -292,6 +289,11 @@ export default function Dashboard() {
           align-items: center;
           gap: 12px;
           flex-wrap: wrap;
+        }
+        .production-suite {
+          display: flex;
+          flex-direction: column;
+          gap: 24px;
         }
         .reset-btn {
           background: rgba(255,255,255,0.06);

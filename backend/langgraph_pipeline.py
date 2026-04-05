@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 from functools import partial
 from typing import Any, Dict, List, Sequence, TypedDict, cast
 
@@ -211,6 +212,55 @@ def _tighten_packaging(segment: dict) -> dict:
     return updated
 
 
+_INSTRUCTION_PATTERNS = [
+    r"^state\b",
+    r"^shift\b",
+    r"^emphasize\b",
+    r"^convey\b",
+    r"^stress\b",
+    r"^frame\b",
+    r"^open\b",
+    r"^close\b",
+    r"^highlight\b",
+    r"^focus\b",
+    r"^mention\b",
+    r"^use\b",
+    r"^keep\b",
+    r"\bphrase\b",
+    r"\btone\b",
+]
+
+
+def _looks_like_editor_instruction(text: str) -> bool:
+    compact = sanitize_text(text).strip().lower()
+    if not compact:
+        return False
+    return any(re.search(pattern, compact) for pattern in _INSTRUCTION_PATTERNS)
+
+
+def _fallback_narration_from_segment(segment: dict) -> str:
+    segment_type = segment.get("segment_type", "body")
+    source = _truncate_words(sanitize_text(segment.get("text", "")), 30)
+    if not source:
+        source = _truncate_words(sanitize_text(segment.get("headline", "")), 18)
+
+    if segment_type == "intro":
+        return f"Tonight: {source}" if source else "Tonight, we bring you the latest verified update."
+    if segment_type == "outro":
+        return "That is the latest for now. We will continue tracking developments and bring you more verified updates."
+    return source or "Here is the latest verified development in this story."
+
+
+def _normalize_narrations(segments: Sequence[dict], narrations: Sequence[str]) -> List[str]:
+    normalized: List[str] = []
+    for segment, narration in zip(segments, narrations):
+        clean = sanitize_text(narration)
+        if _looks_like_editor_instruction(clean):
+            clean = _fallback_narration_from_segment(segment)
+        normalized.append(clean)
+    return normalized
+
+
 def _passthrough(state: GraphState) -> Dict[str, Any]:
     keys = [
         "article_url",
@@ -383,6 +433,8 @@ async def _node_editor(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
         if editorial_directives:
             narrations = apply_editorial_directives(narrations, editorial_directives)
             append_agent_output(job, "editor", "LLM editorial directives", editorial_directives, kind="json")
+
+    narrations = _normalize_narrations(segments_raw, narrations)
 
     segments_raw = _retime_segments(segments_raw, narrations)
 

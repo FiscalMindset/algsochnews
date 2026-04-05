@@ -12,6 +12,28 @@ from backend.utils import get_logger, word_count
 
 log = get_logger("qa")
 
+_INSTRUCTIONAL_NARRATION_RE = re.compile(
+    r"^(state|shift|emphasize|convey|stress|frame|open|focus|mention|use|keep)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_instructional_narration(text: str) -> bool:
+    lowered = text.strip().lower()
+    if not lowered:
+        return False
+    if _INSTRUCTIONAL_NARRATION_RE.search(lowered):
+        return True
+    return any(
+        phrase in lowered
+        for phrase in (
+            "set the stage",
+            "shift tone",
+            "stress the phrase",
+            "emphasize the words",
+        )
+    )
+
 
 def _norm_words(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-zA-Z]{3,}", text.lower())}
@@ -117,6 +139,7 @@ def _narration_score(segments: Sequence[dict], article_text: str) -> tuple[int, 
     repeated_openers = 0
     openers = set()
     robotic_hits = 0
+    instructional_hits = 0
 
     for seg in segments:
         narration = seg.get("anchor_narration", "")
@@ -129,6 +152,9 @@ def _narration_score(segments: Sequence[dict], article_text: str) -> tuple[int, 
         if any(phrase in narration.lower() for phrase in ("as per the report", "according to sources")):
             robotic_hits += 1
 
+        if _looks_instructional_narration(narration):
+            instructional_hits += 1
+
         overlap = len(_norm_words(narration) & article_tokens) / max(len(_norm_words(narration)), 1)
         overlap_scores.append(overlap)
 
@@ -137,8 +163,13 @@ def _narration_score(segments: Sequence[dict], article_text: str) -> tuple[int, 
         f"Average lexical grounding overlap: {avg_overlap:.2f}",
         f"Repeated opener count: {repeated_openers}",
         f"Robotic phrase hits: {robotic_hits}",
+        f"Instruction-style narration hits: {instructional_hits}",
     ]
     recommendation = "Keep factual overlap high and vary sentence openers across segments."
+    if instructional_hits >= max(1, len(segments) // 3):
+        return 1, "Narration includes editorial instructions instead of on-air lines.", evidence, "Replace directive notes with factual broadcast narration."
+    if instructional_hits > 0:
+        return 2, "Narration includes some directive-style lines.", evidence, "Rewrite directive lines into declarative, factual narration."
     if avg_overlap >= 0.45 and repeated_openers == 0 and robotic_hits == 0:
         return 5, "Narration is grounded, concise, and varied.", evidence, recommendation
     if avg_overlap >= 0.35 and robotic_hits <= 1:
@@ -228,6 +259,7 @@ def _build_segment_diagnostics(segments: Sequence[dict], article_text: str) -> t
         main_words = word_count(seg.get("main_headline", ""))
         sub_words = word_count(seg.get("subheadline", ""))
         narration_words = word_count(seg.get("anchor_narration", ""))
+        narration_text = seg.get("anchor_narration", "")
         overlap = len(_norm_words(seg.get("anchor_narration", "")) & article_tokens) / max(
             len(_norm_words(seg.get("anchor_narration", ""))), 1
         )
@@ -255,6 +287,10 @@ def _build_segment_diagnostics(segments: Sequence[dict], article_text: str) -> t
         else:
             issues.append("Narration length is outside preferred range (8-60 words).")
             score -= 1
+
+        if _looks_instructional_narration(narration_text):
+            issues.append("Narration reads like editorial instruction instead of broadcast copy.")
+            score -= 2
 
         if overlap >= 0.3:
             strengths.append("Narration shows factual lexical overlap with source text.")
