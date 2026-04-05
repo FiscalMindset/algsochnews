@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle, Clock, FileText, Loader, RefreshCw } from 'lucide-react'
 
 function StatusIcon({ status }) {
@@ -44,7 +44,14 @@ function formatEventType(value) {
 }
 
 function AgentCard({ agent, index, traceEvents = [] }) {
-  const [showDetails, setShowDetails] = useState(false)
+  const [showDetails, setShowDetails] = useState(agent.status === 'running')
+
+  useEffect(() => {
+    if (agent.status === 'running' && !showDetails) {
+      setShowDetails(true)
+    }
+  }, [agent.status, agent.event_count, showDetails])
+
   const agentEvents = useMemo(
     () => (
       (traceEvents || [])
@@ -89,7 +96,11 @@ function AgentCard({ agent, index, traceEvents = [] }) {
           className="agent-inspect-btn"
           onClick={() => setShowDetails((value) => !value)}
         >
-          {showDetails ? 'Hide how this worked' : 'How this worked'}
+          {agent.status === 'running'
+            ? 'Live lifecycle (auto-open)'
+            : showDetails
+              ? 'Hide how this worked'
+              : 'How this worked'}
         </button>
         <span className="metric-chip">events: {agent.event_count || 0}</span>
       </div>

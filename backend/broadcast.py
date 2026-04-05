@@ -12,12 +12,34 @@ from backend.utils import sanitize_text
 
 
 TOP_TAGS = ["BREAKING", "LIVE", "DEVELOPING", "UPDATE", "LATEST", "ALERT"]
-TRANSITIONS = ["cut", "crossfade", "slide", "cut", "crossfade", "fade_out"]
+TRANSITION_SEQUENCE = ["cut", "crossfade", "slide", "wipe", "push", "crossfade", "zoom", "cut"]
+INTRO_TRANSITIONS = ["crossfade", "slide", "wipe"]
 PREFERRED_HEADLINE_TOKENS = {
     "fire", "blaze", "engines", "fatalities", "casualties", "traffic",
     "police", "cause", "probe", "operations", "damage", "smoke",
     "market", "response", "investigators",
 }
+
+
+def _pick_transition(index: int, total: int, segment_type: str, previous: str | None) -> str:
+    if total <= 1 or index == total - 1 or segment_type == "outro":
+        return "fade_out"
+
+    if segment_type == "intro":
+        pool = INTRO_TRANSITIONS
+        transition = pool[index % len(pool)]
+    else:
+        transition = TRANSITION_SEQUENCE[max(0, index - 1) % len(TRANSITION_SEQUENCE)]
+
+    if transition == previous:
+        if segment_type == "intro":
+            pool = INTRO_TRANSITIONS
+        else:
+            pool = TRANSITION_SEQUENCE
+        idx = pool.index(transition) if transition in pool else 0
+        transition = pool[(idx + 1) % len(pool)]
+
+    return transition
 
 
 def seconds_to_timecode(value: float) -> str:
@@ -239,6 +261,7 @@ def generate_segment_copy(
 
     packages = []
     total = len(segments)
+    previous_transition: str | None = None
     for index, seg in enumerate(segments):
         if index == 0 and article_title:
             main_headline = _headline_case(_trim_trailing_stopwords(_truncate_words(article_title, 7).rstrip(".")))
@@ -266,9 +289,8 @@ def generate_segment_copy(
         else:
             top_tag = TOP_TAGS[min(index, len(TOP_TAGS) - 1)]
 
-        transition = TRANSITIONS[min(index, len(TRANSITIONS) - 1)]
-        if index == total - 1:
-            transition = "fade_out"
+        transition = _pick_transition(index, total, seg["segment_type"], previous_transition)
+        previous_transition = transition
         facts = _facts_from_segment(seg["text"])
         editorial_focus = _segment_focus(seg["segment_type"], index, total)
         lower_third = _make_lower_third(main_headline, subheadline)

@@ -5,6 +5,7 @@ visual_planner.py — Broadcast scene planner and scene-image composer.
 from __future__ import annotations
 
 import hashlib
+import html
 import textwrap
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -19,6 +20,10 @@ log = get_logger("visual_planner")
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; NewsVideoBot/2.0)"
 }
+LOW_VALUE_IMAGE_HINTS = ("flag", "icon", "logo", "sprite", "avatar", "badge")
+MIN_IMAGE_WIDTH = 560
+MIN_IMAGE_HEIGHT = 320
+MIN_IMAGE_AREA = 560 * 320
 
 
 def _safe_filename(url: str) -> str:
@@ -63,14 +68,59 @@ def _download_image(url: str, dest_dir: Path) -> Optional[Path]:
         return None
 
 
+def _is_low_value_image(url: str, width: int, height: int) -> bool:
+    lower_url = url.lower()
+    if any(token in lower_url for token in LOW_VALUE_IMAGE_HINTS):
+        return True
+    if width < MIN_IMAGE_WIDTH or height < MIN_IMAGE_HEIGHT:
+        return True
+    if width * height < MIN_IMAGE_AREA:
+        return True
+    aspect = width / max(height, 1)
+    # Narrow strips and almost-square tiny assets are poor as right-panel visuals.
+    if aspect > 3.2 or aspect < 0.45:
+        return True
+    return False
+
+
+def _image_quality_score(url: str, width: int, height: int) -> float:
+    area_score = min((width * height) / float(1920 * 1080), 1.0)
+    aspect = width / max(height, 1)
+    aspect_score = 1.0 - min(abs(aspect - 16 / 9) / 1.2, 1.0)
+    penalty = 0.25 if any(token in url.lower() for token in LOW_VALUE_IMAGE_HINTS) else 0.0
+    return round(max(0.0, 0.65 * area_score + 0.35 * aspect_score - penalty), 3)
+
+
 def prepare_source_images(article_images: List[str], job_id: str) -> List[dict]:
     media_dir = config.MEDIA_DIR / job_id / "source"
     media_dir.mkdir(parents=True, exist_ok=True)
     downloaded: List[dict] = []
     for image_url in article_images[:10]:
+        if any(token in image_url.lower() for token in LOW_VALUE_IMAGE_HINTS):
+            continue
         path = _download_image(image_url, media_dir)
         if path:
-            downloaded.append({"url": image_url, "path": path})
+            try:
+                with Image.open(path) as img:
+                    width, height = img.size
+            except Exception:
+                path.unlink(missing_ok=True)
+                continue
+
+            if _is_low_value_image(image_url, width, height):
+                path.unlink(missing_ok=True)
+                continue
+
+            downloaded.append(
+                {
+                    "url": image_url,
+                    "path": path,
+                    "width": width,
+                    "height": height,
+                    "quality_score": _image_quality_score(image_url, width, height),
+                }
+            )
+    downloaded.sort(key=lambda item: item.get("quality_score", 0.0), reverse=True)
     return downloaded
 
 
@@ -233,6 +283,164 @@ def _director_note(layout: str, transition: str, camera_motion: str, has_source:
     )
 
 
+def _write_html_frame(
+        dest: Path,
+        package: dict,
+        source_domain: str,
+        visual_url: str,
+        visual_kind: str,
+) -> Path:
+        top_tag = html.escape(package.get("top_tag", "UPDATE"))
+        main_headline = html.escape(package.get("main_headline", ""))
+        subheadline = html.escape(package.get("subheadline", ""))
+        lower_third = html.escape(package.get("lower_third", ""))
+        ticker_text = html.escape(package.get("ticker_text", ""))
+        start_tc = html.escape(package.get("start_timecode", "00:00"))
+        end_tc = html.escape(package.get("end_timecode", "00:00"))
+        visual_src = html.escape(visual_url or "")
+        source_domain = html.escape((source_domain or "news desk").upper())
+        visual_label = "SOURCE" if visual_kind == "source" else "AI SUPPORT"
+
+        html_doc = f"""<!doctype html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>{main_headline}</title>
+    <style>
+        :root {{
+            --bg1: #060d1d;
+            --bg2: #0c1f3f;
+            --ink: #f7fbff;
+            --sub: #bdd0ee;
+            --accent: #ef4444;
+        }}
+        * {{ box-sizing: border-box; }}
+        html, body {{ margin: 0; width: 1280px; height: 720px; font-family: 'Inter', 'Segoe UI', sans-serif; }}
+        body {{
+            background: radial-gradient(circle at 82% 8%, rgba(59,130,246,.45), transparent 42%),
+                                    linear-gradient(135deg, var(--bg1), var(--bg2));
+            color: var(--ink);
+            display: grid;
+            grid-template-rows: 84px 1fr 94px;
+            padding: 18px 24px;
+            gap: 12px;
+        }}
+        .top {{
+            border: 1px solid rgba(255,255,255,.15);
+            border-radius: 18px;
+            background: rgba(4,10,20,.78);
+            display: grid;
+            grid-template-columns: 180px 1fr;
+            align-items: center;
+            padding: 10px 16px;
+            gap: 16px;
+        }}
+        .tag {{
+            justify-self: start;
+            background: var(--accent);
+            border-radius: 999px;
+            padding: 8px 12px;
+            font-size: 18px;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }}
+        .heads h1 {{ margin: 0; font-size: 38px; line-height: 1.08; }}
+        .heads p {{ margin: 6px 0 0 0; color: var(--sub); font-size: 22px; line-height: 1.25; }}
+        .main {{
+            display: grid;
+            grid-template-columns: 390px 1fr;
+            gap: 14px;
+        }}
+        .left, .right {{
+            border: 1px solid rgba(255,255,255,.15);
+            border-radius: 18px;
+            overflow: hidden;
+            background: rgba(7,13,24,.76);
+        }}
+        .left {{
+            display: grid;
+            align-content: end;
+            padding: 16px;
+            background: linear-gradient(160deg, rgba(20,34,66,.95), rgba(6,12,24,.95));
+        }}
+        .left .label {{ font-size: 20px; color: #9ec3ff; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }}
+        .left .note {{ margin-top: 10px; font-size: 16px; color: #dbeafe; line-height: 1.45; }}
+        .right img {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
+        .visual-kind {{
+            position: absolute;
+            margin: 12px;
+            background: rgba(3,9,18,.8);
+            border: 1px solid rgba(255,255,255,.2);
+            color: #dbeafe;
+            font-weight: 700;
+            font-size: 14px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            letter-spacing: .06em;
+        }}
+        .right-wrap {{ position: relative; height: 100%; }}
+        .bottom {{
+            border: 1px solid rgba(255,255,255,.15);
+            border-radius: 18px;
+            background: rgba(4,10,20,.78);
+            display: grid;
+            grid-template-rows: 1fr auto;
+            padding: 12px 16px;
+            gap: 10px;
+        }}
+        .lower {{ display: flex; justify-content: space-between; align-items: center; gap: 10px; }}
+        .lower strong {{ font-size: 26px; }}
+        .time {{ font-family: 'JetBrains Mono', monospace; color: #93c5fd; font-size: 16px; }}
+        .ticker {{
+            background: rgba(239,68,68,.2);
+            border: 1px solid rgba(239,68,68,.45);
+            border-radius: 12px;
+            padding: 8px 10px;
+            font-size: 18px;
+            color: #fee2e2;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+    </style>
+</head>
+<body>
+    <section class=\"top\">
+        <div class=\"tag\">{top_tag}</div>
+        <div class=\"heads\">
+            <h1>{main_headline}</h1>
+            <p>{subheadline}</p>
+        </div>
+    </section>
+    <section class=\"main\">
+        <div class=\"left\">
+            <div class=\"label\">AI Anchor Panel</div>
+            <div class=\"note\">Camera cue: {html.escape(package.get('camera_motion', 'steady')).replace('_', ' ')}</div>
+            <div class=\"note\">Transition: {html.escape(package.get('transition', 'cut'))}</div>
+        </div>
+        <div class=\"right\">
+            <div class=\"right-wrap\">
+                <span class=\"visual-kind\">{visual_label}</span>
+                <img src=\"{visual_src}\" alt=\"Frame visual\" />
+            </div>
+        </div>
+    </section>
+    <section class=\"bottom\">
+        <div class=\"lower\">
+            <strong>{lower_third}</strong>
+            <span class=\"time\">{start_tc} - {end_tc} | {source_domain}</span>
+        </div>
+        <div class=\"ticker\">{ticker_text}</div>
+    </section>
+</body>
+</html>
+"""
+        dest.write_text(html_doc, encoding="utf-8")
+        return dest
+
+
 def _compose_scene(
     dest: Path,
     source_domain: str,
@@ -322,7 +530,8 @@ def plan_visuals(
     media_dir = config.MEDIA_DIR / job_id
     support_dir = media_dir / "support"
     scene_dir = media_dir / "scenes"
-    for directory in (support_dir, scene_dir):
+    frame_dir = media_dir / "frames"
+    for directory in (support_dir, scene_dir, frame_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     downloaded = source_inventory if source_inventory is not None else prepare_source_images(article_images, job_id)
@@ -354,6 +563,7 @@ def plan_visuals(
             source_image_url = source_item["url"]
             ai_support_visual_prompt = None
             support_path = None
+            support_image_url = None
             rationale = "A source image is available for this beat, so the package keeps factual visual grounding on screen."
             visual_source_kind = "source"
             visual_confidence = 0.92
@@ -365,6 +575,7 @@ def plan_visuals(
             panel_visual.save(support_path, "JPEG", quality=92)
             source_image_url = None
             ai_support_visual_prompt = support_prompt
+            support_image_url = f"/media/{job_id}/support/{support_path.name}"
             rationale = "No reliable source image was available for this beat, so the package uses an AI-support visual plan."
             visual_source_kind = "ai_support"
             visual_confidence = 0.74
@@ -389,6 +600,16 @@ def plan_visuals(
         scene_path = scene_dir / f"seg_{index:02d}_scene.jpg"
         _compose_scene(scene_path, source_domain, package_with_visual, panel_visual)
 
+        html_frame_path = frame_dir / f"seg_{index:02d}_frame.html"
+        visual_url = source_image_url or support_image_url or f"/media/{job_id}/scenes/{scene_path.name}"
+        _write_html_frame(
+            html_frame_path,
+            package_with_visual,
+            source_domain,
+            visual_url=visual_url,
+            visual_kind=visual_source_kind,
+        )
+
         visuals.append(
             {
                 "index": index,
@@ -402,6 +623,8 @@ def plan_visuals(
                 "image_path": str(scene_path),
                 "scene_image_path": str(scene_path),
                 "scene_image_url": f"/media/{job_id}/scenes/{scene_path.name}",
+                "html_frame_path": str(html_frame_path),
+                "html_frame_url": f"/media/{job_id}/frames/{html_frame_path.name}",
                 "visual_prompt": ai_support_visual_prompt or "",
                 "visual_rationale": rationale,
                 "transition": package["transition"],

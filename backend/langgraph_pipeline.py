@@ -171,6 +171,8 @@ def _build_segment_records(
                 "source_visual_used": bool(visual.get("source_image_url")),
                 "scene_image_url": visual.get("scene_image_url"),
                 "scene_image_path": visual.get("scene_image_path"),
+                "html_frame_url": visual.get("html_frame_url"),
+                "html_frame_path": visual.get("html_frame_path"),
                 "support_image_path": visual.get("support_image_path"),
                 "image_url": visual.get("source_image_url"),
                 "image_path": visual.get("image_path"),
@@ -226,19 +228,25 @@ async def _node_extraction(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, 
     loop = asyncio.get_running_loop()
     article_url = state["article_url"]
 
+    extraction_tools = [
+        "requests",
+        "newspaper3k",
+        "readability-lxml",
+        "beautifulsoup",
+        "json-ld parser",
+    ]
     set_agent_state(job, "extraction", status="running", progress=20, summary="Running multi-strategy extraction ranking.")
-    set_agent_tools(
+    set_agent_tools(job, "extraction", extraction_tools)
+    set_agent_input(job, "extraction", {"article_url": article_url})
+
+    record_trace_event(
         job,
         "extraction",
-        [
-            "requests",
-            "newspaper3k",
-            "readability-lxml",
-            "beautifulsoup",
-            "json-ld parser",
-        ],
+        "node_start",
+        "Started extraction pass across parser candidates.",
+        input_payload={"article_url": article_url},
+        tools=extraction_tools,
     )
-    set_agent_input(job, "extraction", {"article_url": article_url})
 
     article_raw = await loop.run_in_executor(None, scrape_article, article_url)
 
@@ -257,7 +265,25 @@ async def _node_extraction(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, 
     )
 
     append_agent_output(job, "extraction", "Chosen extractor", article_raw.get("method", "unknown"))
+    append_agent_output(job, "extraction", "Extracted preview", article_raw.get("text", "")[:900])
+    selected_candidate = next(
+        (
+            item
+            for item in article_raw.get("candidates", [])
+            if item.get("method") == article_raw.get("method") and item.get("selected")
+        ),
+        None,
+    )
+    if selected_candidate:
+        append_agent_output(
+            job,
+            "extraction",
+            "Dropped samples",
+            selected_candidate.get("dropped_samples", []),
+            kind="list",
+        )
     append_agent_output(job, "extraction", "Candidates", article_raw.get("candidates", []), kind="table")
+    append_agent_output(job, "extraction", "Extractor attempts", article_raw.get("extraction_attempts", []), kind="table")
 
     set_agent_state(
         job,
@@ -287,8 +313,9 @@ async def _node_editor(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
     gemini_api_key = state.get("gemini_api_key", "")
     use_gemini = bool(state.get("use_gemini", True))
 
+    editor_tools = ["segmenter", "narration templates", "gemini llm", "timing normalizer"]
     set_agent_state(job, "editor", status="running", progress=25, summary="Generating story beats and anchor narration.")
-    set_agent_tools(job, "editor", ["segmenter", "narration templates", "gemini llm", "timing normalizer"])
+    set_agent_tools(job, "editor", editor_tools)
     set_agent_model(job, "editor", selected_model)
     set_agent_input(
         job,
@@ -298,6 +325,19 @@ async def _node_editor(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
             "source_title": article_raw.get("title", ""),
             "word_count": article_raw.get("word_count", 0),
         },
+    )
+
+    record_trace_event(
+        job,
+        "editor",
+        "node_start",
+        "Started editorial planning and narration drafting.",
+        input_payload={
+            "max_segments": max_segments,
+            "source_title": article_raw.get("title", ""),
+            "word_count": article_raw.get("word_count", 0),
+        },
+        tools=editor_tools,
     )
 
     segments_raw = await loop.run_in_executor(
@@ -315,6 +355,17 @@ async def _node_editor(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
         article_raw["text"],
         use_gemini,
         selected_model,
+    )
+
+    record_trace_event(
+        job,
+        "editor",
+        "beats_ready",
+        "Story beats segmented and narration draft generated.",
+        output_payload={
+            "segment_count": len(segments_raw),
+            "sample_opening": narrations[0] if narrations else "",
+        },
     )
 
     editorial_directives = {}
@@ -393,7 +444,8 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
         summary="Executing copy and visual-prep in parallel fan-out.",
         branch="parallel",
     )
-    set_agent_tools(job, "packaging", ["broadcast copy generator", "source image prep", "visual planner"])
+    packaging_tools = ["broadcast copy generator", "source image prep", "visual planner"]
+    set_agent_tools(job, "packaging", packaging_tools)
     set_agent_input(
         job,
         "packaging",
@@ -401,6 +453,18 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
             "segment_count": len(segments_raw),
             "source_images": len(article_raw.get("images", [])),
         },
+    )
+
+    record_trace_event(
+        job,
+        "packaging",
+        "node_start",
+        "Started packaging fan-out for copy, source assets, and visual planning.",
+        input_payload={
+            "segment_count": len(segments_raw),
+            "source_images": len(article_raw.get("images", [])),
+        },
+        tools=packaging_tools,
     )
 
     copy_future = loop.run_in_executor(
@@ -417,6 +481,17 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
         job_id,
     )
     (overall_headline, copy_plan), source_inventory = await asyncio.gather(copy_future, source_future)
+
+    record_trace_event(
+        job,
+        "packaging",
+        "parallel_fanout",
+        "Copy generation and source-image preparation completed.",
+        output_payload={
+            "copy_segments": len(copy_plan),
+            "source_assets": len(source_inventory),
+        },
+    )
 
     llm_packaging_overrides = {}
     if use_gemini and gemini_api_key:
@@ -507,8 +582,9 @@ async def _node_review(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
     gemini_api_key = state.get("gemini_api_key", "")
     use_gemini = bool(state.get("use_gemini", True))
 
+    review_tools = ["qa rubric scorer", "targeted retry router"]
     set_agent_state(job, "review", status="running", progress=45, summary="Scoring package and deciding routes.")
-    set_agent_tools(job, "review", ["qa rubric scorer", "targeted retry router"])
+    set_agent_tools(job, "review", review_tools)
     set_agent_input(
         job,
         "review",
@@ -518,12 +594,36 @@ async def _node_review(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
         },
     )
 
+    record_trace_event(
+        job,
+        "review",
+        "node_start",
+        "Started QA rubric scoring and route evaluation.",
+        input_payload={
+            "retry_round": retry_round,
+            "segment_count": len(packaged_segments),
+        },
+        tools=review_tools,
+    )
+
     qa_score, review = await loop.run_in_executor(
         None,
         review_broadcast_package,
         packaged_segments,
         article_raw["text"],
         retry_round,
+    )
+
+    record_trace_event(
+        job,
+        "review",
+        "rubric_scored",
+        "Core QA rubric scores computed.",
+        output_payload={
+            "average": review.overall_average,
+            "passed": review.passed,
+            "retry_decision": review.retry_decision,
+        },
     )
 
     weak_segments = review.weak_segments or list(range(len(packaged_segments)))
@@ -607,6 +707,15 @@ async def _node_retry_editor(state: GraphState, ctx: Dict[str, Any]) -> Dict[str
         branch="qa_retry",
     )
 
+    record_trace_event(
+        job,
+        "editor",
+        "retry_start",
+        "Started targeted editorial retry for weak segments.",
+        input_payload={"weak_segments": weak},
+        tools=["narration tightening"],
+    )
+
     for weak_index in weak:
         if weak_index >= len(packaged_segments):
             continue
@@ -620,6 +729,15 @@ async def _node_retry_editor(state: GraphState, ctx: Dict[str, Any]) -> Dict[str
         "editor",
         "targeted_retry_complete",
         reason=f"Retightened narration for {len(weak)} weak segments.",
+        route_to="packaging_parallel",
+    )
+
+    record_trace_event(
+        job,
+        "editor",
+        "retry_complete",
+        "Editorial retry finished and routed back to packaging.",
+        output_payload={"weak_segments_updated": len(weak)},
         route_to="packaging_parallel",
     )
 
@@ -638,6 +756,7 @@ async def _node_retry_editor(state: GraphState, ctx: Dict[str, Any]) -> Dict[str
 
 async def _node_retry_packaging(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]:
     job = ctx["job"]
+    weak = set(state.get("weak_segments", []))
 
     set_agent_state(
         job,
@@ -649,9 +768,17 @@ async def _node_retry_packaging(state: GraphState, ctx: Dict[str, Any]) -> Dict[
         branch="qa_retry",
     )
 
+    record_trace_event(
+        job,
+        "packaging",
+        "retry_start",
+        "Started targeted packaging retry for weak segments.",
+        input_payload={"weak_segments": list(weak)},
+        tools=["packaging tightening", "visual planner"],
+    )
+
     segments_raw = state["segments_raw"]
     narrations = state["narrations"]
-    weak = set(state.get("weak_segments", []))
     copy_plan = list(state["copy_plan"])
 
     for index in weak:
@@ -678,6 +805,15 @@ async def _node_retry_packaging(state: GraphState, ctx: Dict[str, Any]) -> Dict[
         "packaging",
         "targeted_retry_complete",
         reason=f"Retightened packaging for {len(weak)} weak segments.",
+        route_to="review",
+    )
+
+    record_trace_event(
+        job,
+        "packaging",
+        "retry_complete",
+        "Packaging retry finished and routed back to QA.",
+        output_payload={"weak_segments_updated": len(weak)},
         route_to="review",
     )
 

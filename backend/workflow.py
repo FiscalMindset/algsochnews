@@ -30,6 +30,11 @@ AGENT_BLUEPRINTS = [
         "name": "QA / Evaluation Agent",
         "role": "Scores the package, decides retries, and validates the final handoff.",
     },
+    {
+        "key": "video_generation",
+        "name": "Video Generation Agent",
+        "role": "Synthesizes audio, aligns transcript cues, and renders the final MP4 output.",
+    },
 ]
 
 
@@ -69,6 +74,7 @@ def build_workflow_map() -> dict:
             "News Editor Agent",
             "Visual Packaging Agent",
             "QA / Evaluation Agent",
+            "Video Generation Agent",
         ],
         "parallel_stage": {
             "label": "Packaging fan-out",
@@ -78,10 +84,11 @@ def build_workflow_map() -> dict:
             ],
         },
         "conditional_edges": [
-            "qa_pass -> finalize",
+            "qa_pass -> video_generation",
             "qa_retry_editor -> editor",
             "qa_retry_packaging -> packaging",
             "qa_retry_editor_and_packaging -> editor+packaging",
+            "video_generation -> finalize",
         ],
         "retry_policy": {
             "targeted": True,

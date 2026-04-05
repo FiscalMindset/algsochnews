@@ -43,6 +43,8 @@ class Config:
     VIDEO_WIDTH: int = int(os.getenv("VIDEO_WIDTH", "1280"))
     VIDEO_HEIGHT: int = int(os.getenv("VIDEO_HEIGHT", "720"))
     VIDEO_FPS: int = int(os.getenv("VIDEO_FPS", "24"))
+    RENDER_HTML_FRAMES: bool = os.getenv("RENDER_HTML_FRAMES", "true").lower() == "true"
+    PLAYWRIGHT_RENDER_WAIT_MS: int = int(os.getenv("PLAYWRIGHT_RENDER_WAIT_MS", "200"))
     WORDS_PER_SECOND: float = float(os.getenv("WORDS_PER_SECOND", "2.5"))
     QA_THRESHOLD: float = float(os.getenv("QA_THRESHOLD", "0.6"))
     MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "2"))

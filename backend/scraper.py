@@ -3,10 +3,11 @@ scraper.py — Multi-source article extractor
 Attempts 3 methods in priority order and scores each result.
 """
 
+from collections import Counter
 import json
 import re
 import requests
-from typing import Optional
+from typing import List, Optional, Tuple
 from bs4 import BeautifulSoup
 from backend.utils import get_logger, sanitize_text, extract_domain, config
 
@@ -33,23 +34,73 @@ JUNK_LINE_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 
-def _clean_article_text(text: str) -> str:
+def _clean_article_text_with_meta(text: str) -> Tuple[str, dict]:
     text = sanitize_text(text)
     # Drop repetitive junk lines that often survive extraction.
     cleaned_lines = []
+    dropped_samples = []
+    raw_chunks = []
     for chunk in re.split(r"(?<=[.!?])\s+|\n+", text):
         chunk = chunk.strip()
         if not chunk:
             continue
+        raw_chunks.append(chunk)
         if len(chunk.split()) < 4:
+            if len(dropped_samples) < 3:
+                dropped_samples.append(chunk)
             continue
         if JUNK_LINE_RE.search(chunk):
+            if len(dropped_samples) < 3:
+                dropped_samples.append(chunk)
             continue
         cleaned_lines.append(chunk)
 
     text = " ".join(cleaned_lines)
     text = re.sub(r"\s+", " ", text).strip()
-    return text
+    raw_word_count = len(" ".join(raw_chunks).split())
+    cleaned_word_count = len(text.split())
+    kept_ratio = round(cleaned_word_count / max(raw_word_count, 1), 3)
+    return text, {
+        "raw_word_count": raw_word_count,
+        "cleaned_word_count": cleaned_word_count,
+        "kept_ratio": kept_ratio,
+        "dropped_samples": dropped_samples,
+    }
+
+
+def _clean_article_text(text: str) -> str:
+    cleaned, _ = _clean_article_text_with_meta(text)
+    return cleaned
+
+
+def _preview_excerpt(text: str, words: int = 36) -> str:
+    parts = text.split()
+    if len(parts) <= words:
+        return " ".join(parts)
+    return " ".join(parts[:words]).rstrip(" ,.;:") + "..."
+
+
+def _summarize_dom_tags(soup: BeautifulSoup, limit: int = 6) -> List[str]:
+    counts = Counter()
+    for node in soup.find_all(True):
+        name = (node.name or "").strip().lower()
+        if not name or name in {"script", "style", "noscript"}:
+            continue
+        counts[name] += 1
+    return [f"{name}:{count}" for name, count in counts.most_common(limit)]
+
+
+def _describe_container(node) -> str:
+    if node is None or not getattr(node, "name", None):
+        return "unknown"
+    name = str(node.name).lower()
+    node_id = node.get("id") if hasattr(node, "get") else None
+    classes = node.get("class") if hasattr(node, "get") else []
+    class_suffix = ""
+    if classes:
+        class_suffix = "." + ".".join(str(value) for value in classes[:2])
+    id_suffix = f"#{node_id}" if node_id else ""
+    return f"{name}{id_suffix}{class_suffix}"
 
 def _extract_newspaper(url: str) -> Optional[dict]:
     """Extractor 1: newspaper3k"""
@@ -60,14 +111,25 @@ def _extract_newspaper(url: str) -> Optional[dict]:
         article.parse()
         if not article.text or len(article.text) < 200:
             return None
+        images = list(article.images)[:20]
+        authors = article.authors or []
         return {
             "title": article.title or "",
             "text": article.text,
             "top_image": article.top_image or None,
-            "images": list(article.images)[:20],
-            "authors": article.authors or [],
+            "images": images,
+            "authors": authors,
             "published_date": str(article.publish_date) if article.publish_date else None,
             "method": "newspaper3k",
+            "selector_used": "newspaper3k::article",
+            "dom_tags": [],
+            "extraction_signals": [
+                "newspaper3k parser extracted article body and metadata.",
+            ],
+            "method_details": {
+                "image_count": len(images),
+                "author_count": len(authors),
+            },
         }
     except Exception as e:
         log.warning(f"newspaper3k failed: {e}")
@@ -80,11 +142,13 @@ def _extract_readability(url: str, html: str) -> Optional[dict]:
         from readability import Document
         doc = Document(html)
         raw = doc.summary()
-        soup = BeautifulSoup(raw, "lxml")
-        text = soup.get_text(separator=" ")
+        summary_soup = BeautifulSoup(raw, "lxml")
+        content_container = summary_soup.find(["article", "main", "section", "div"]) or summary_soup
+        text = summary_soup.get_text(separator=" ")
         text = _clean_article_text(text)
         if len(text) < 200:
             return None
+        paragraph_count = len(summary_soup.find_all("p"))
         return {
             "title": doc.title() or "",
             "text": text,
@@ -93,6 +157,16 @@ def _extract_readability(url: str, html: str) -> Optional[dict]:
             "authors": [],
             "published_date": None,
             "method": "readability",
+            "selector_used": "readability::summary",
+            "dom_tags": _summarize_dom_tags(content_container),
+            "extraction_signals": [
+                "Readability summary selected the primary article content.",
+                f"Detected {paragraph_count} paragraph tags in summary output.",
+            ],
+            "method_details": {
+                "paragraph_count": paragraph_count,
+                "container": _describe_container(content_container),
+            },
         }
     except Exception as e:
         log.warning(f"readability failed: {e}")
@@ -154,6 +228,16 @@ def _extract_json_ld(url: str, html: str) -> Optional[dict]:
             "authors": [a for a in authors if a],
             "published_date": published_date,
             "method": "json_ld",
+            "selector_used": "script[type=application/ld+json]",
+            "dom_tags": ["script:application/ld+json"],
+            "extraction_signals": [
+                f"Parsed {len(blocks)} JSON-LD script blocks.",
+                f"Collected {len(texts)} text fields from schema payload.",
+            ],
+            "method_details": {
+                "json_ld_blocks": len(blocks),
+                "text_fields": len(texts),
+            },
         }
     except Exception as e:
         log.warning(f"json-ld failed: {e}")
@@ -211,6 +295,16 @@ def _extract_beautifulsoup(url: str, html: str) -> Optional[dict]:
             "authors": [],
             "published_date": None,
             "method": "beautifulsoup",
+            "selector_used": _describe_container(body),
+            "dom_tags": _summarize_dom_tags(body),
+            "extraction_signals": [
+                "Removed script/style/nav/footer elements before text extraction.",
+                f"Primary container: {_describe_container(body)}.",
+            ],
+            "method_details": {
+                "paragraph_count": len(paragraphs),
+                "image_count": len(imgs),
+            },
         }
     except Exception as e:
         log.warning(f"BeautifulSoup failed: {e}")
@@ -243,6 +337,14 @@ def _extract_trafilatura(url: str, html: str) -> Optional[dict]:
             "authors": payload.get("author", []) if isinstance(payload.get("author"), list) else [],
             "published_date": payload.get("date"),
             "method": "trafilatura",
+            "selector_used": "trafilatura::main_content",
+            "dom_tags": [],
+            "extraction_signals": [
+                "Trafilatura extracted cleaned long-form article text.",
+            ],
+            "method_details": {
+                "source": "trafilatura",
+            },
         }
     except Exception as e:
         log.warning(f"trafilatura failed: {e}")
@@ -322,28 +424,80 @@ def scrape_article(url: str) -> dict:
         log.warning(f"HTML fetch failed: {e}")
 
     candidates = []
+    attempts = []
+
+    def _register_candidate(method_name: str, result: Optional[dict], reason_if_failed: str) -> None:
+        if not result:
+            attempts.append(
+                {
+                    "method": method_name,
+                    "status": "failed",
+                    "reason": reason_if_failed,
+                }
+            )
+            return
+
+        cleaned, cleaning_meta = _clean_article_text_with_meta(result.get("text", ""))
+        result["text"] = cleaned
+        result["cleaning_meta"] = cleaning_meta
+        result["method"] = method_name
+        score = _score(result)
+        candidates.append((result, score))
+        attempts.append(
+            {
+                "method": method_name,
+                "status": "accepted",
+                "reason": "Extractor returned usable cleaned article text.",
+                "word_count": cleaning_meta.get("cleaned_word_count", 0),
+                "kept_ratio": cleaning_meta.get("kept_ratio", 0.0),
+                "preview_excerpt": _preview_excerpt(cleaned),
+                "selector_used": result.get("selector_used", ""),
+                "dom_tags": result.get("dom_tags", []),
+                "extraction_signals": result.get("extraction_signals", []),
+                "method_details": result.get("method_details", {}),
+            }
+        )
 
     r1 = _extract_newspaper(url)
-    if r1:
-        r1["text"] = _clean_article_text(r1.get("text", ""))
-        candidates.append((r1, _score(r1)))
+    _register_candidate("newspaper3k", r1, "Extractor returned no usable article text.")
 
     if html:
         r2 = _extract_readability(url, html)
-        if r2:
-            candidates.append((r2, _score(r2)))
+        _register_candidate("readability", r2, "Extractor returned no usable article text.")
 
         r3 = _extract_json_ld(url, html)
-        if r3:
-            candidates.append((r3, _score(r3)))
+        _register_candidate("json_ld", r3, "No valid article body found in JSON-LD metadata.")
 
         r4 = _extract_beautifulsoup(url, html)
-        if r4:
-            candidates.append((r4, _score(r4)))
+        _register_candidate("beautifulsoup", r4, "DOM fallback extractor could not produce clean article text.")
 
         r5 = _extract_trafilatura(url, html)
-        if r5:
-            candidates.append((r5, _score(r5)))
+        _register_candidate("trafilatura", r5, "Trafilatura parser returned insufficient content.")
+    else:
+        attempts.extend(
+            [
+                {
+                    "method": "readability",
+                    "status": "failed",
+                    "reason": "HTML fetch failed before readability extraction.",
+                },
+                {
+                    "method": "json_ld",
+                    "status": "failed",
+                    "reason": "HTML fetch failed before JSON-LD extraction.",
+                },
+                {
+                    "method": "beautifulsoup",
+                    "status": "failed",
+                    "reason": "HTML fetch failed before BeautifulSoup extraction.",
+                },
+                {
+                    "method": "trafilatura",
+                    "status": "failed",
+                    "reason": "HTML fetch failed before Trafilatura extraction.",
+                },
+            ]
+        )
 
     if not candidates:
         raise ValueError("All extraction methods failed — could not parse article.")
@@ -378,16 +532,63 @@ def scrape_article(url: str) -> dict:
         deduped_images.append(img)
     best["images"] = deduped_images[:20]
 
-    best["candidates"] = [
-        {
-            "method": item["method"],
-            "score": score,
-            "title": item.get("title", ""),
-            "word_count": len(item.get("text", "").split()),
-            "image_count": len(item.get("images", [])),
-            "selected": item["method"] == best["method"],
-        }
-        for item, score in candidates
-    ]
+    candidate_rows = []
+    for item, score in candidates:
+        cleaning_meta = item.get("cleaning_meta", {})
+        selected = item["method"] == best["method"]
+        candidate_rows.append(
+            {
+                "method": item["method"],
+                "score": score,
+                "title": item.get("title", ""),
+                "word_count": len(item.get("text", "").split()),
+                "image_count": len(item.get("images", [])),
+                "selected": selected,
+                "preview_excerpt": _preview_excerpt(item.get("text", "")),
+                "kept_ratio": cleaning_meta.get("kept_ratio", 1.0),
+                "dropped_samples": cleaning_meta.get("dropped_samples", []),
+                "image_preview": item.get("images", [])[:3],
+                "status": "accepted",
+                "reason": (
+                    "Selected as best extraction candidate for downstream pipeline."
+                    if selected
+                    else "Valid extraction candidate but lower quality score than selected method."
+                ),
+                "selector_used": item.get("selector_used", ""),
+                "dom_tags": item.get("dom_tags", []),
+                "extraction_signals": item.get("extraction_signals", []),
+                "method_details": item.get("method_details", {}),
+            }
+        )
+
+    accepted_methods = {row["method"] for row in candidate_rows}
+    for attempt in attempts:
+        if attempt.get("status") != "failed":
+            continue
+        if attempt["method"] in accepted_methods:
+            continue
+        candidate_rows.append(
+            {
+                "method": attempt["method"],
+                "score": 0.0,
+                "title": "",
+                "word_count": 0,
+                "image_count": 0,
+                "selected": False,
+                "preview_excerpt": "",
+                "kept_ratio": 0.0,
+                "dropped_samples": [],
+                "image_preview": [],
+                "status": "failed",
+                "reason": attempt.get("reason", "Extractor failed."),
+                "selector_used": "",
+                "dom_tags": [],
+                "extraction_signals": [],
+                "method_details": {},
+            }
+        )
+
+    best["candidates"] = candidate_rows
+    best["extraction_attempts"] = attempts
 
     return best

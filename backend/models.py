@@ -30,6 +30,16 @@ class ExtractionCandidate(BaseModel):
     word_count: int = 0
     image_count: int = 0
     selected: bool = False
+    preview_excerpt: str = ""
+    kept_ratio: float = 1.0
+    dropped_samples: List[str] = Field(default_factory=list)
+    image_preview: List[str] = Field(default_factory=list)
+    status: str = "accepted"
+    reason: str = ""
+    selector_used: str = ""
+    dom_tags: List[str] = Field(default_factory=list)
+    extraction_signals: List[str] = Field(default_factory=list)
+    method_details: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentArtifact(BaseModel):
@@ -91,6 +101,18 @@ class ReviewCriterion(BaseModel):
     score: int
     max_score: int = 5
     reason: str
+    evidence: List[str] = Field(default_factory=list)
+    recommendation: str = ""
+
+
+class SegmentQADiagnostic(BaseModel):
+    segment_id: int
+    headline: str = ""
+    score: int = 0
+    status: str = ""
+    strengths: List[str] = Field(default_factory=list)
+    issues: List[str] = Field(default_factory=list)
+    recommendation: str = ""
 
 
 class QAReview(BaseModel):
@@ -101,6 +123,10 @@ class QAReview(BaseModel):
     weak_segments: List[int] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
     criteria: List[ReviewCriterion] = Field(default_factory=list)
+    score_breakdown: Dict[str, float] = Field(default_factory=dict)
+    score_explanation: str = ""
+    segment_diagnostics: List[SegmentQADiagnostic] = Field(default_factory=list)
+    next_actions: List[str] = Field(default_factory=list)
 
 
 class TranscriptCue(BaseModel):
@@ -163,6 +189,8 @@ class Segment(BaseModel):
     source_visual_used: bool = False
     scene_image_url: Optional[str] = None
     scene_image_path: Optional[str] = None
+    html_frame_url: Optional[str] = None
+    html_frame_path: Optional[str] = None
     support_image_path: Optional[str] = None
     image_url: Optional[str] = None
     image_path: Optional[str] = None
@@ -188,6 +216,7 @@ class ArticleData(BaseModel):
     extraction_method: str
     extraction_score: float = 0.0
     extraction_candidates: List[ExtractionCandidate] = Field(default_factory=list)
+    extraction_attempts: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class Script(BaseModel):
@@ -206,6 +235,7 @@ class Script(BaseModel):
     workflow_overview: Dict[str, Any] = Field(default_factory=dict)
     model_verification: Optional[ModelVerification] = None
     route_history: List[str] = Field(default_factory=list)
+    llm_enhanced: bool = False
 
 
 class GenerateResponse(BaseModel):

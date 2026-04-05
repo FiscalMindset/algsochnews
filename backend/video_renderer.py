@@ -7,6 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 from typing import List
+from backend.html_frame_renderer import rasterize_html_frames
 from backend.utils import get_logger, config
 
 log = get_logger("video_renderer")
@@ -208,6 +209,9 @@ def _transition_name(name: str) -> str:
         "cut": "fade",
         "crossfade": "fade",
         "slide": "slideleft",
+        "wipe": "wipeleft",
+        "push": "smoothleft",
+        "zoom": "circleopen",
         "fade_out": "fadeblack",
     }
     return mapping.get((name or "").lower(), "fade")
@@ -297,8 +301,12 @@ def render_video(
 
     clip_paths: List[Path] = []
 
+    render_visuals = visuals
+    if config.RENDER_HTML_FRAMES:
+        render_visuals = rasterize_html_frames(visuals, job_id)
+
     for i, (seg, vis, narr, audio, headline) in enumerate(
-        zip(segments, visuals, narrations, audio_paths, headlines)
+        zip(segments, render_visuals, narrations, audio_paths, headlines)
     ):
         clip_out = clips_dir / f"clip_{i:02d}.mp4"
         log.info(f"Rendering clip {i+1}/{len(segments)}: {headline[:40]}")
@@ -317,7 +325,7 @@ def render_video(
 
     final_path = output_dir / "final_video.mp4"
     log.info(f"Concatenating {len(clip_paths)} clips…")
-    transitions = [visual.get("transition", "crossfade") for visual in visuals]
+    transitions = [visual.get("transition", "crossfade") for visual in render_visuals]
     _concat_segments(clip_paths, transitions, final_path)
 
     return final_path

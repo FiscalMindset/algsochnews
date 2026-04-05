@@ -41,6 +41,10 @@ from backend.workflow import (
     build_agent_state,
     build_workflow_map,
     record_activity,
+    record_trace_event,
+    set_agent_input,
+    set_agent_state,
+    set_agent_tools,
     snapshot_agents,
     snapshot_trace_events,
 )
@@ -96,6 +100,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             note=model_resolution.note,
         )
         job["model_verification"] = model_verification.model_dump()
+        llm_enhanced = bool(req.use_gemini and config.USE_GEMINI and bool(config.GEMINI_API_KEY))
 
         trace_bridge = TraceBridge(job_id=job_id, article_url=req.article_url)
         job["_trace_bridge"] = trace_bridge
@@ -104,6 +109,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         workflow_overview.setdefault("retry_policy", {})["max_retry_rounds"] = config.MAX_RETRIES
         workflow_overview["selected_model"] = model_verification.selected_model
         workflow_overview["model_verification_ok"] = model_verification.verification_ok
+        workflow_overview["llm_enhanced"] = llm_enhanced
         job["workflow_overview"] = workflow_overview
 
         update(8, f"Model selected: {model_verification.selected_model}. Starting LangGraph execution...", "editor")
@@ -147,7 +153,51 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         overall_headline = graph_state["overall_headline"]
         packaged_segments = graph_state["packaged_segments"]
 
-        update(72, "Synthesizing anchor audio...")
+        target_runtime = segments_raw[-1]["end_time"] if segments_raw else 0
+        set_agent_state(
+            job,
+            "video_generation",
+            status="running",
+            progress=18,
+            summary="Synthesizing audio and preparing final video render.",
+        )
+        set_agent_tools(
+            job,
+            "video_generation",
+            [
+                "tts synthesis",
+                "transcript aligner",
+                "ffmpeg renderer",
+            ],
+        )
+        set_agent_input(
+            job,
+            "video_generation",
+            {
+                "segment_count": len(segments_raw),
+                "target_runtime_sec": target_runtime,
+            },
+        )
+        record_trace_event(
+            job,
+            "video_generation",
+            "node_start",
+            "Video generation stage started: audio synthesis and final render pipeline.",
+            input_payload={
+                "segment_count": len(segments_raw),
+                "target_runtime_sec": target_runtime,
+            },
+            tools=["synthesize_all", "TranscriptAligner", "render_video"],
+        )
+
+        update(72, "Synthesizing anchor audio...", "video_generation")
+        record_trace_event(
+            job,
+            "video_generation",
+            "audio_synthesis_start",
+            "Started anchor audio synthesis for all segments.",
+            metrics={"segment_count": len(segments_raw)},
+        )
         durations = [seg["duration"] for seg in segments_raw]
         audio_paths = await loop.run_in_executor(
             None,
@@ -156,15 +206,31 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             durations,
             job_id,
         )
+        append_agent_output(job, "video_generation", "Audio clips", len(audio_paths), kind="metric")
+        record_trace_event(
+            job,
+            "video_generation",
+            "audio_synthesis_complete",
+            "Audio synthesis complete.",
+            output_payload={"audio_clips": len(audio_paths)},
+        )
 
         aligner = TranscriptAligner(mode="paced")
         transcript_cues = aligner.align(packaged_segments, audio_durations=durations)
         packaged_segments = attach_transcript_to_segments(packaged_segments, transcript_cues)
         rundown = build_rundown(packaged_segments)
+        append_agent_output(job, "video_generation", "Transcript cues", len(transcript_cues), kind="metric")
         append_agent_output(job, "packaging", "Transcript cues", len(transcript_cues), kind="metric")
         append_agent_output(job, "packaging", "Rundown items", len(rundown), kind="metric")
 
-        update(86, "Rendering final broadcast video...")
+        update(86, "Rendering final broadcast video...", "video_generation")
+        record_trace_event(
+            job,
+            "video_generation",
+            "video_render_start",
+            "Started final FFmpeg render.",
+            metrics={"runtime_sec": target_runtime},
+        )
         final_video = await loop.run_in_executor(
             None,
             render_video,
@@ -175,6 +241,37 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             [seg["main_headline"] for seg in packaged_segments],
             overall_headline,
             job_id,
+        )
+        append_agent_output(job, "video_generation", "Final video", f"/outputs/{job_id}/final_video.mp4")
+        record_trace_event(
+            job,
+            "video_generation",
+            "video_render_complete",
+            "Final FFmpeg render complete.",
+            output_payload={"video_url": f"/outputs/{job_id}/final_video.mp4"},
+        )
+        record_trace_event(
+            job,
+            "video_generation",
+            "node_complete",
+            "Video generation completed with synthesized audio and rendered MP4.",
+            output_payload={
+                "audio_clips": len(audio_paths),
+                "transcript_cues": len(transcript_cues),
+                "video_url": f"/outputs/{job_id}/final_video.mp4",
+                "runtime_sec": target_runtime,
+            },
+        )
+        set_agent_state(
+            job,
+            "video_generation",
+            status="done",
+            progress=100,
+            summary="Audio, transcript alignment, and final render completed.",
+            metrics={
+                "audio_clips": len(audio_paths),
+                "runtime_sec": round(target_runtime, 2),
+            },
         )
 
         update(95, "Saving script JSON and outputs...")
@@ -194,6 +291,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             extraction_method=article_raw.get("method", "unknown"),
             extraction_score=article_raw.get("extraction_score", 0.0),
             extraction_candidates=article_raw.get("candidates", []),
+            extraction_attempts=article_raw.get("extraction_attempts", []),
         )
 
         script = Script(
@@ -212,6 +310,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             workflow_overview=job.get("workflow_overview", {}),
             model_verification=model_verification,
             route_history=graph_state.get("route_history", []),
+            llm_enhanced=llm_enhanced,
         )
 
         script_path = out_dir / "script.json"
@@ -219,6 +318,8 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             await handle.write(script.model_dump_json(indent=2))
 
         elapsed = round(time.time() - start, 2)
+        review_payload = review.model_dump() if review is not None else None
+
         result = GenerateResponse(
             success=True,
             job_id=job_id,
@@ -248,13 +349,28 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
                 "progress": 100,
                 "message": "Algsoch News package generated successfully.",
                 "result": result.model_dump(),
-                "review": review.model_dump(),
+                "review": review_payload,
                 "model_verification": model_verification.model_dump(),
             }
         )
 
     except Exception as exc:
         log.exception(f"[{job_id}] Pipeline failed: {exc}")
+        for agent in job.get("agents", []):
+            if agent.get("status") != "running":
+                continue
+            key = agent.get("key")
+            if not key:
+                continue
+            try:
+                set_agent_state(
+                    job,
+                    key,
+                    status="failed",
+                    summary="Stage aborted due to pipeline failure.",
+                )
+            except Exception:
+                pass
         job.update(
             {
                 "status": "failed",
