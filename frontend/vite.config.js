@@ -11,6 +11,8 @@ export default defineConfig({
       '/outputs': 'http://localhost:8000',
       '/media': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
+      '/api': 'http://localhost:8000',
+      '/openapi.json': 'http://localhost:8000',
     },
   },
 })

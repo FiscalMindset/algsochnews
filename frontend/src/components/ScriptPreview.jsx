@@ -35,6 +35,12 @@ function SegmentCard({ segment, defaultOpen = false }) {
               <p><strong>Lower third:</strong> {segment.lower_third}</p>
               <p><strong>Camera motion:</strong> {segment.camera_motion}</p>
               <p><strong>Transition:</strong> {segment.transition}</p>
+              {segment.html_frame_url && (
+                <p>
+                  <strong>HTML frame:</strong>{' '}
+                  <a href={segment.html_frame_url} target="_blank" rel="noreferrer">Open frame preview</a>
+                </p>
+              )}
             </div>
             <div className="script-card-panel">
               <div className="script-card-label">Source grounding</div>
@@ -55,6 +61,18 @@ function SegmentCard({ segment, defaultOpen = false }) {
               {segment.ai_support_visual_prompt && <p><strong>AI support prompt:</strong> {segment.ai_support_visual_prompt}</p>}
             </div>
           </div>
+
+          {segment.html_frame_url && (
+            <div className="script-frame-preview">
+              <div className="script-card-label">HTML frame preview</div>
+              <iframe
+                src={segment.html_frame_url}
+                title={`frame-${segment.segment_id}`}
+                loading="lazy"
+                sandbox="allow-same-origin"
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -134,6 +152,25 @@ function SegmentCard({ segment, defaultOpen = false }) {
           line-height: 1.65;
           color: rgba(255,255,255,0.82);
         }
+        .script-card a {
+          color: #93c5fd;
+          text-decoration: underline;
+        }
+        .script-frame-preview {
+          margin-top: 12px;
+          border-radius: 14px;
+          padding: 12px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.05);
+        }
+        .script-frame-preview iframe {
+          width: 100%;
+          height: 220px;
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 12px;
+          background: rgba(8,12,18,0.8);
+          margin-top: 8px;
+        }
         .script-card-label {
           display: inline-flex;
           align-items: center;
@@ -168,6 +205,7 @@ function SegmentCard({ segment, defaultOpen = false }) {
 
 export default function ScriptPreview({ script }) {
   const [viewMode, setViewMode] = useState('screenplay')
+  const showJson = viewMode === 'json'
   const jsonPreview = useMemo(() => JSON.stringify(script, null, 2), [script])
 
   if (!script) return null
@@ -214,60 +252,74 @@ export default function ScriptPreview({ script }) {
         </div>
       )}
 
-      {viewMode === 'screenplay' ? (
-        <>
-          <div className="screenplay-block">
-            <div className="script-block-title">Human-readable screenplay</div>
-            <pre>{script.screenplay_text}</pre>
-          </div>
-
-          <div className="script-side-grid">
-            <div className="screenplay-block">
-              <div className="script-block-title script-block-title--with-icon">
-                <Rows3 size={14} /> Editorial rundown
+      {!!script.article?.extraction_attempts?.length && (
+        <div className="screenplay-block">
+          <div className="script-block-title">Extraction attempts</div>
+          <div className="extraction-attempts">
+            {script.article.extraction_attempts.map((attempt, idx) => (
+              <div key={`${attempt.method}-${idx}`} className="extraction-attempt">
+                <strong>{attempt.method}</strong>
+                <span className={`attempt-status attempt-status--${attempt.status}`}>{attempt.status}</span>
+                <p>{attempt.reason}</p>
+                {attempt.preview_excerpt && <p><em>{attempt.preview_excerpt}</em></p>}
               </div>
-              <div className="rundown-list">
-                {(script.rundown || []).map((item) => (
-                  <div key={item.segment_id} className="rundown-item">
-                    <strong>{item.slug}</strong>
-                    <p>{item.start_timecode} - {item.end_timecode}</p>
-                    <span>{item.lower_third}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="screenplay-block">
-              <div className="script-block-title script-block-title--with-icon">
-                <Captions size={14} /> Live transcript cues
-              </div>
-              <div className="transcript-list">
-                {(script.live_transcript || []).map((cue) => (
-                  <div key={cue.id} className="transcript-item">
-                    <span>{cue.start_timecode}</span>
-                    <p>{cue.text}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="script-card-list">
-            {script.segments.map((segment, index) => (
-              <SegmentCard
-                key={segment.segment_id ?? index}
-                segment={segment}
-                defaultOpen={index === 0}
-              />
             ))}
           </div>
-        </>
-      ) : (
+        </div>
+      )}
+
+      {showJson && (
         <div className="json-block">
-          <div className="script-block-title">Structured JSON</div>
+          <div className="script-block-title">Structured JSON (screenplay remains visible below)</div>
           <pre>{jsonPreview}</pre>
         </div>
       )}
+
+      <div className="screenplay-block">
+        <div className="script-block-title">Human-readable screenplay</div>
+        <pre>{script.screenplay_text}</pre>
+      </div>
+
+      <div className="script-side-grid">
+        <div className="screenplay-block">
+          <div className="script-block-title script-block-title--with-icon">
+            <Rows3 size={14} /> Editorial rundown
+          </div>
+          <div className="rundown-list">
+            {(script.rundown || []).map((item) => (
+              <div key={item.segment_id} className="rundown-item">
+                <strong>{item.slug}</strong>
+                <p>{item.start_timecode} - {item.end_timecode}</p>
+                <span>{item.lower_third}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="screenplay-block">
+          <div className="script-block-title script-block-title--with-icon">
+            <Captions size={14} /> Live transcript cues
+          </div>
+          <div className="transcript-list">
+            {(script.live_transcript || []).map((cue) => (
+              <div key={cue.id} className="transcript-item">
+                <span>{cue.start_timecode}</span>
+                <p>{cue.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="script-card-list">
+        {script.segments.map((segment, index) => (
+          <SegmentCard
+            key={segment.segment_id ?? index}
+            segment={segment}
+            defaultOpen={index === 0}
+          />
+        ))}
+      </div>
 
       <style>{`
         .script-shell {
@@ -403,8 +455,46 @@ export default function ScriptPreview({ script }) {
           line-height: 1.6;
           color: rgba(255,255,255,0.76);
         }
+        .extraction-attempts {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+        .extraction-attempt {
+          border-radius: 14px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.06);
+          padding: 12px;
+          display: grid;
+          gap: 6px;
+          font-size: 12px;
+          line-height: 1.6;
+          color: rgba(255,255,255,0.78);
+        }
+        .attempt-status {
+          width: fit-content;
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          border-radius: 999px;
+          padding: 4px 8px;
+          border: 1px solid rgba(255,255,255,0.12);
+        }
+        .attempt-status--accepted {
+          color: #6ee7b7;
+          border-color: rgba(16,185,129,0.45);
+          background: rgba(16,185,129,0.12);
+        }
+        .attempt-status--failed {
+          color: #fca5a5;
+          border-color: rgba(239,68,68,0.45);
+          background: rgba(239,68,68,0.12);
+        }
         @media (max-width: 860px) {
           .script-side-grid {
+            grid-template-columns: 1fr;
+          }
+          .extraction-attempts {
             grid-template-columns: 1fr;
           }
         }

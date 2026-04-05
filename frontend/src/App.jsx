@@ -1,6 +1,5 @@
 // App.jsx — Root with nav + layout
 import Dashboard from './Dashboard.jsx'
-import { Zap } from 'lucide-react'
 
 function Navbar() {
   return (
@@ -8,7 +7,7 @@ function Navbar() {
       <div className="nav-inner">
         <div className="nav-brand">
           <div className="nav-logo">
-            <Zap size={18} fill="currentColor" />
+            <img src="/favicon.svg" alt="Algsoch News logo" className="nav-logo-img" />
           </div>
           <span className="nav-name">Algsoch News</span>
           <span className="nav-version">v3.0</span>
@@ -35,10 +34,19 @@ function Navbar() {
         }
         .nav-brand { display: flex; align-items: center; gap: 10px; }
         .nav-logo {
-          width: 32px; height: 32px; border-radius: 8px;
-          background: var(--gradient-primary);
-          display: flex; align-items: center; justify-content: center;
-          color: white; box-shadow: 0 0 16px rgba(59,130,246,0.4);
+          width: 34px;
+          height: 34px;
+          border-radius: 10px;
+          overflow: hidden;
+          background: rgba(255,255,255,0.96);
+          border: 1px solid rgba(255,255,255,0.22);
+          box-shadow: 0 0 16px rgba(59,130,246,0.3);
+        }
+        .nav-logo-img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
         }
         .nav-name { font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
         .nav-version {

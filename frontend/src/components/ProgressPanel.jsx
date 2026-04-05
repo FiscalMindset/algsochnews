@@ -118,7 +118,7 @@ export default function ProgressPanel({ progress, message, status, agents = [], 
         }
         .agent-rail {
           display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
           gap: 10px;
         }
         .agent-rail-card {

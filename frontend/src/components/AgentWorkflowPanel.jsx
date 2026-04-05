@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle, Clock, FileText, Loader, RefreshCw } from 'lucide-react'
 
 function StatusIcon({ status }) {
@@ -10,11 +11,51 @@ function StatusIcon({ status }) {
 function renderValue(value) {
   if (value == null) return '—'
   if (typeof value === 'number' || typeof value === 'string') return String(value)
-  if (Array.isArray(value)) return JSON.stringify(value, null, 2)
-  return JSON.stringify(value, null, 2)
+  const serialized = Array.isArray(value)
+    ? JSON.stringify(value, null, 2)
+    : JSON.stringify(value, null, 2)
+  if (!serialized) return '—'
+  if (serialized.length <= 2200) return serialized
+  return `${serialized.slice(0, 2200)}\n...truncated`
 }
 
-function AgentCard({ agent, index }) {
+function formatClock(ts) {
+  if (!ts) return '—'
+  const parsed = Number(ts)
+  if (!Number.isFinite(parsed)) return '—'
+  return new Date(parsed * 1000).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
+function formatDuration(start, end) {
+  if (!start || !end) return '—'
+  const seconds = Math.max(0, Number(end) - Number(start))
+  if (!Number.isFinite(seconds)) return '—'
+  return `${seconds.toFixed(1)}s`
+}
+
+function formatEventType(value) {
+  if (!value) return 'event'
+  return String(value).replace(/_/g, ' ')
+}
+
+function AgentCard({ agent, index, traceEvents = [] }) {
+  const [showDetails, setShowDetails] = useState(false)
+  const agentEvents = useMemo(
+    () => (
+      (traceEvents || [])
+        .filter((event) => event.agent_key === agent.key)
+        .sort((left, right) => Number(left.ts || 0) - Number(right.ts || 0))
+        .slice(-20)
+    ),
+    [traceEvents, agent.key],
+  )
+  const duration = formatDuration(agent.started_at, agent.finished_at)
+
   return (
     <article className={`agent-card agent-card--${agent.status}`}>
       <div className="agent-card-top">
@@ -36,45 +77,84 @@ function AgentCard({ agent, index }) {
 
       <p className="agent-summary">{agent.summary || 'Waiting for work allocation.'}</p>
 
-      {agent.current_input != null && (
-        <div className="agent-output">
-          <div className="agent-output-label">Input</div>
-          <pre className="agent-output-value">{renderValue(agent.current_input)}</pre>
-        </div>
-      )}
-
-      {agent.tools_used?.length > 0 && (
-        <div className="agent-tools">
-          {agent.tools_used.map((tool) => (
-            <span key={`${agent.key}-${tool}`} className="metric-chip">tool: {tool}</span>
-          ))}
-        </div>
-      )}
-
-      {agent.decisions?.length > 0 && (
-        <div className="agent-decisions">
-          {agent.decisions.slice(-3).map((decision, idx) => (
-            <div key={`${agent.key}-decision-${idx}`} className="agent-decision-item">{decision}</div>
-          ))}
-        </div>
-      )}
-
-      <div className="agent-metrics">
-        {agent.retry_count > 0 && <span className="metric-chip"><RefreshCw size={11} /> Retry {agent.retry_count}</span>}
-        {agent.branch && <span className="metric-chip">Branch: {agent.branch}</span>}
-        {Object.entries(agent.metrics || {}).slice(0, 3).map(([key, value]) => (
-          <span key={key} className="metric-chip">{key.replace(/_/g, ' ')}: {String(value)}</span>
-        ))}
+      <div className="agent-lifecycle-summary">
+        <span>start: {formatClock(agent.started_at)}</span>
+        <span>end: {formatClock(agent.finished_at)}</span>
+        <span>duration: {duration}</span>
       </div>
 
-      <div className="agent-outputs">
-        {(agent.outputs || []).slice(-3).map((output, idx) => (
-          <div key={idx} className="agent-output">
-            <div className="agent-output-label">{output.label}</div>
-            <pre className="agent-output-value">{renderValue(output.value)}</pre>
+      <div className="agent-card-actions">
+        <button
+          type="button"
+          className="agent-inspect-btn"
+          onClick={() => setShowDetails((value) => !value)}
+        >
+          {showDetails ? 'Hide how this worked' : 'How this worked'}
+        </button>
+        <span className="metric-chip">events: {agent.event_count || 0}</span>
+      </div>
+
+      {showDetails && (
+        <div className="agent-detail-stack">
+          {agent.current_input != null && (
+            <div className="agent-output">
+              <div className="agent-output-label">Input</div>
+              <pre className="agent-output-value">{renderValue(agent.current_input)}</pre>
+            </div>
+          )}
+
+          {agent.tools_used?.length > 0 && (
+            <div className="agent-tools">
+              {agent.tools_used.map((tool) => (
+                <span key={`${agent.key}-${tool}`} className="metric-chip">tool: {tool}</span>
+              ))}
+            </div>
+          )}
+
+          {agent.decisions?.length > 0 && (
+            <div className="agent-decisions">
+              {agent.decisions.slice(-3).map((decision, idx) => (
+                <div key={`${agent.key}-decision-${idx}`} className="agent-decision-item">{decision}</div>
+              ))}
+            </div>
+          )}
+
+          <div className="agent-metrics">
+            {agent.retry_count > 0 && <span className="metric-chip"><RefreshCw size={11} /> Retry {agent.retry_count}</span>}
+            {agent.branch && <span className="metric-chip">Branch: {agent.branch}</span>}
+            {Object.entries(agent.metrics || {}).slice(0, 4).map(([key, value]) => (
+              <span key={key} className="metric-chip">{key.replace(/_/g, ' ')}: {String(value)}</span>
+            ))}
           </div>
-        ))}
-      </div>
+
+          {agentEvents.length > 0 && (
+            <div className="agent-output">
+              <div className="agent-output-label">Lifecycle timeline</div>
+              <div className="agent-trace-list">
+                {agentEvents.map((event, idx) => (
+                  <div key={`${agent.key}-trace-${event.ts}-${idx}`} className="agent-trace-item">
+                    <strong>Step {idx + 1}: {formatEventType(event.event_type)}</strong>
+                    <span>{event.message}</span>
+                    <em>time: {formatClock(event.ts)}</em>
+                    {event.tools?.length > 0 && <em>tools: {event.tools.join(', ')}</em>}
+                    {event.decision && <em>decision: {event.decision}</em>}
+                    {event.route_to && <em>route: {event.route_to}</em>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="agent-outputs">
+            {(agent.outputs || []).slice(-4).map((output, idx) => (
+              <div key={idx} className="agent-output">
+                <div className="agent-output-label">{output.label}</div>
+                <pre className="agent-output-value">{renderValue(output.value)}</pre>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </article>
   )
 }
@@ -98,6 +178,82 @@ function TraceStream({ traceEvents = [] }) {
   )
 }
 
+function ExtractionPanel({ agents = [] }) {
+  const extractionAgent = agents.find((agent) => agent.key === 'extraction')
+  if (!extractionAgent) return null
+
+  const outputs = extractionAgent.outputs || []
+  const candidates = outputs.find((item) => item.label === 'Candidates')?.value || []
+  const extractedPreview = outputs.find((item) => item.label === 'Extracted preview')?.value
+  const attempts = outputs.find((item) => item.label === 'Extractor attempts')?.value || []
+
+  return (
+    <section className="review-panel">
+      <div className="review-header">
+        <div className="review-title">
+          <FileText size={16} />
+          <span>Extraction transparency</span>
+        </div>
+      </div>
+
+      {extractedPreview && (
+        <div className="review-note">
+          <strong>Selected extraction preview:</strong> {String(extractedPreview).slice(0, 420)}
+        </div>
+      )}
+
+      {!!candidates.length && (
+        <div className="review-grid">
+          {candidates.map((candidate, idx) => (
+            <div key={`${candidate.method}-${idx}`} className="review-item">
+              <div className="review-item-top">
+                <strong>{candidate.method}</strong>
+                <span>{candidate.status || 'accepted'} · {candidate.score || 0}</span>
+              </div>
+              <p>{candidate.reason || 'No reason provided.'}</p>
+              {candidate.selector_used && <p><strong>Selector:</strong> {candidate.selector_used}</p>}
+              {candidate.dom_tags?.length > 0 && (
+                <div className="review-mini-list">
+                  {candidate.dom_tags.map((tagName, tagIndex) => (
+                    <span key={`${candidate.method}-tag-${tagIndex}`}>tag: {tagName}</span>
+                  ))}
+                </div>
+              )}
+              {candidate.extraction_signals?.length > 0 && (
+                <div className="review-mini-list">
+                  {candidate.extraction_signals.map((signal, signalIndex) => (
+                    <span key={`${candidate.method}-signal-${signalIndex}`}>{signal}</span>
+                  ))}
+                </div>
+              )}
+              {candidate.preview_excerpt && <p><em>{candidate.preview_excerpt}</em></p>}
+              {candidate.dropped_samples?.length > 0 && (
+                <div className="review-mini-list">
+                  {candidate.dropped_samples.map((sample, sidx) => (
+                    <span key={`${candidate.method}-drop-${sidx}`}>{sample}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!!attempts.length && (
+        <div className="review-notes">
+          {attempts.map((attempt, idx) => (
+            <div key={`${attempt.method}-${idx}`} className="review-note">
+              <strong>{attempt.method}</strong>: {attempt.status} · {attempt.reason}
+              {attempt.selector_used && <div className="review-note-meta">selector: {attempt.selector_used}</div>}
+              {attempt.dom_tags?.length > 0 && <div className="review-note-meta">tags: {attempt.dom_tags.join(', ')}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function ReviewPanel({ review }) {
   if (!review) return null
   return (
@@ -112,6 +268,10 @@ function ReviewPanel({ review }) {
         </div>
       </div>
 
+      {review.score_explanation && (
+        <div className="review-note">{review.score_explanation}</div>
+      )}
+
       <div className="review-grid">
         {(review.criteria || []).map((criterion) => (
           <div key={criterion.key} className="review-item">
@@ -120,9 +280,45 @@ function ReviewPanel({ review }) {
               <span>{criterion.score}/5</span>
             </div>
             <p>{criterion.reason}</p>
+            {!!criterion.evidence?.length && (
+              <div className="review-mini-list">
+                {criterion.evidence.map((line, idx) => (
+                  <span key={`${criterion.key}-e-${idx}`}>{line}</span>
+                ))}
+              </div>
+            )}
+            {criterion.recommendation && <p><strong>Recommendation:</strong> {criterion.recommendation}</p>}
           </div>
         ))}
       </div>
+
+      {!!review.segment_diagnostics?.length && (
+        <div className="review-grid">
+          {review.segment_diagnostics.map((segment) => (
+            <div key={`diag-${segment.segment_id}`} className="review-item">
+              <div className="review-item-top">
+                <strong>Segment {segment.segment_id}: {segment.headline}</strong>
+                <span>{segment.score}/5 · {segment.status}</span>
+              </div>
+              {!!segment.strengths?.length && (
+                <p>Strengths: {segment.strengths.join(' | ')}</p>
+              )}
+              {!!segment.issues?.length && (
+                <p>Issues: {segment.issues.join(' | ')}</p>
+              )}
+              {segment.recommendation && <p><strong>Action:</strong> {segment.recommendation}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!!review.next_actions?.length && (
+        <div className="review-notes">
+          {review.next_actions.map((note, index) => (
+            <div key={`next-${index}`} className="review-note">{note}</div>
+          ))}
+        </div>
+      )}
 
       {review.notes?.length > 0 && (
         <div className="review-notes">
@@ -173,7 +369,7 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
           <p className="workflow-kicker">Visible orchestration</p>
           <h2>Agent Workflow</h2>
         </div>
-        <p className="workflow-sub">Extraction, editorial, packaging, and QA are surfaced so the client can inspect the work, not just the final answer.</p>
+        <p className="workflow-sub">Extraction, editorial, packaging, QA, and video generation are surfaced so the client can inspect the work, not just the final answer.</p>
       </div>
 
       {modelVerification?.selected_model && (
@@ -196,11 +392,12 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
 
       <div className="agent-grid">
         {agents.map((agent, index) => (
-          <AgentCard key={agent.key} agent={agent} index={index} />
+          <AgentCard key={agent.key} agent={agent} index={index} traceEvents={traceEvents} />
         ))}
       </div>
 
       <div className="workflow-bottom">
+        <ExtractionPanel agents={agents} />
         <div className="activity-panel">
           <div className="activity-title">Live activity log</div>
           <div className="activity-list">
@@ -372,6 +569,51 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
           line-height: 1.6;
           color: rgba(255,255,255,0.78);
         }
+        .agent-card-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .agent-lifecycle-summary {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .agent-lifecycle-summary span {
+          font-size: 11px;
+          color: rgba(255,255,255,0.62);
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 999px;
+          padding: 4px 8px;
+        }
+        .agent-inspect-btn {
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(255,255,255,0.04);
+          color: rgba(255,255,255,0.86);
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+          padding: 7px 10px;
+          cursor: pointer;
+          transition: all var(--transition-fast);
+        }
+        .agent-inspect-btn:hover {
+          border-color: rgba(59,130,246,0.42);
+          background: rgba(59,130,246,0.14);
+          color: #dbeafe;
+        }
+        .agent-inspect-btn:focus-visible {
+          outline: 2px solid rgba(59,130,246,0.6);
+          outline-offset: 2px;
+        }
+        .agent-detail-stack {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
         .agent-model {
           display: inline-flex;
           width: fit-content;
@@ -440,9 +682,39 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
           color: rgba(255,255,255,0.82);
           font-family: var(--font-mono);
         }
+        .agent-trace-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .agent-trace-item {
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          padding: 10px;
+          border-radius: 10px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.06);
+        }
+        .agent-trace-item strong {
+          font-size: 11px;
+          color: #93c5fd;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+        }
+        .agent-trace-item span {
+          font-size: 12px;
+          line-height: 1.55;
+          color: rgba(255,255,255,0.8);
+        }
+        .agent-trace-item em {
+          font-size: 11px;
+          color: rgba(255,255,255,0.56);
+          font-style: normal;
+        }
         .workflow-bottom {
           display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
           gap: 16px;
         }
         .activity-panel,
@@ -502,7 +774,7 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
         }
         .review-grid {
           display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
           gap: 10px;
         }
         .review-item {
@@ -523,6 +795,20 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
           line-height: 1.6;
           color: rgba(255,255,255,0.62);
         }
+        .review-mini-list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          margin-top: 8px;
+        }
+        .review-mini-list span {
+          font-size: 11px;
+          color: rgba(255,255,255,0.72);
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 10px;
+          padding: 6px 8px;
+        }
         .review-notes {
           display: flex;
           flex-direction: column;
@@ -537,10 +823,14 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
           background: rgba(245,158,11,0.07);
           border: 1px solid rgba(245,158,11,0.18);
         }
+        .review-note-meta {
+          margin-top: 6px;
+          color: rgba(255,255,255,0.58);
+          font-size: 11px;
+        }
         .agent-spin { animation: spin 1s linear infinite; }
         @media (max-width: 900px) {
-          .agent-grid,
-          .review-grid {
+          .agent-grid {
             grid-template-columns: 1fr;
           }
           .workflow-bottom {

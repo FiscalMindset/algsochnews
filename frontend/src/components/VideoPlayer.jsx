@@ -2,7 +2,7 @@
 import { useRef, useState } from 'react'
 import { Play, Pause, Volume2, VolumeX, Maximize2 } from 'lucide-react'
 
-export default function VideoPlayer({ videoUrl, title, activeSegment = null, onProgress }) {
+export default function VideoPlayer({ videoUrl, title, activeSegment = null, onProgress, llmEnhanced = false }) {
   const videoRef = useRef(null)
   const [playing, setPlaying]   = useState(false)
   const [muted, setMuted]       = useState(false)
@@ -108,7 +108,7 @@ export default function VideoPlayer({ videoUrl, title, activeSegment = null, onP
             {fmt(videoRef.current?.currentTime || 0)} / {fmt(duration)}
           </span>
           <div style={{ flex: 1 }} />
-          <span className="vp-live-badge">● AI GENERATED</span>
+          <span className="vp-live-badge">● {llmEnhanced ? 'LLM EDIT ASSISTED' : 'AUTOMATED NEWS PACKAGE'}</span>
           <button id="vp-fullscreen" className="vp-ctrl-btn" onClick={handleFullscreen}>
             <Maximize2 size={18} />
           </button>

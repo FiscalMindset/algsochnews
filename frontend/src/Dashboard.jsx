@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AlertTriangle, RefreshCw, Tv } from 'lucide-react'
 
 import AgentWorkflowPanel from './components/AgentWorkflowPanel.jsx'
@@ -41,6 +41,12 @@ export default function Dashboard() {
     script?.segments?.find((segment) => currentTime >= segment.start_time && currentTime <= segment.end_time) ||
     script?.segments?.[0] ||
     null
+
+  useEffect(() => {
+    if (isDone) {
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+  }, [isDone, jobId])
 
   return (
     <main className="dashboard">
@@ -121,6 +127,18 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {vidUrl && (
+            <section className="fade-up fade-up-delay-1">
+              <VideoPlayer
+                videoUrl={vidUrl}
+                title={script?.overall_headline || 'Algsoch News Broadcast'}
+                activeSegment={activeSegment}
+                onProgress={(time) => setCurrentTime(time)}
+                llmEnhanced={Boolean(script?.llm_enhanced)}
+              />
+            </section>
+          )}
+
           <AgentWorkflowPanel
             agents={result.agents || agents}
             activityLog={result.activity_log || activityLog}
@@ -129,17 +147,6 @@ export default function Dashboard() {
             workflowOverview={script?.workflow_overview || workflowOverview}
             modelVerification={script?.model_verification || result.model_verification || modelVerification}
           />
-
-          {vidUrl && (
-            <section className="fade-up fade-up-delay-1">
-              <VideoPlayer
-                videoUrl={vidUrl}
-                title={script?.overall_headline || 'Algsoch News Broadcast'}
-                activeSegment={activeSegment}
-                onProgress={(time) => setCurrentTime(time)}
-              />
-            </section>
-          )}
 
           {script && (
             <section className="fade-up fade-up-delay-1">

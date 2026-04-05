@@ -80,7 +80,7 @@ export default function URLInput({ onSubmit, disabled }) {
         {showAdvanced && (
           <div className="advanced-panel fade-up">
             <label className="adv-row">
-              <span>Use Gemini AI refinement</span>
+              <span>Use Gemini editorial refinement</span>
               <div
                 id="gemini-toggle"
                 className={`toggle ${useGemini ? 'toggle--on' : ''}`}

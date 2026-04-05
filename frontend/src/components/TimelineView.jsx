@@ -18,6 +18,10 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
         <div>
           <p className="timeline-kicker">Broadcast rundown</p>
           <h2>Segment Timeline</h2>
+          <div className="timeline-owners">
+            <span>Timeline owner: Visual Packaging Agent</span>
+            <span>Playback owner: Video Generation Agent</span>
+          </div>
         </div>
         <div className="timeline-meta">
           <span>{segments.length} segments</span>
@@ -55,7 +59,14 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
             className={`timeline-card ${currentTime >= segment.start_time && currentTime <= segment.end_time ? 'timeline-card--active' : ''}`}
           >
             <div className="timeline-card-media">
-              {segment.scene_image_url ? (
+              {segment.html_frame_url ? (
+                <iframe
+                  src={segment.html_frame_url}
+                  title={`frame-${segment.segment_id}`}
+                  loading="lazy"
+                  sandbox="allow-same-origin"
+                />
+              ) : segment.scene_image_url ? (
                 <img src={segment.scene_image_url} alt={segment.main_headline} />
               ) : (
                 <div className="timeline-card-fallback">{segment.top_tag}</div>
@@ -85,9 +96,23 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
                 <strong>{segment.transition}</strong>
               </div>
               <div className="timeline-detail-row">
+                <span>Timeline owner</span>
+                <strong>Visual Packaging Agent</strong>
+              </div>
+              <div className="timeline-detail-row">
+                <span>Render owner</span>
+                <strong>Video Generation Agent</strong>
+              </div>
+              <div className="timeline-detail-row">
                 <span>Right panel</span>
                 <strong>{segment.right_panel}</strong>
               </div>
+              {segment.html_frame_url && (
+                <div className="timeline-detail-row">
+                  <span>HTML frame</span>
+                  <strong><a href={segment.html_frame_url} target="_blank" rel="noreferrer">Open preview</a></strong>
+                </div>
+              )}
             </div>
           </article>
         ))}
@@ -115,6 +140,20 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
         }
         .timeline-head h2 {
           font-size: 24px;
+        }
+        .timeline-owners {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 10px;
+        }
+        .timeline-owners span {
+          font-size: 11px;
+          color: rgba(255,255,255,0.74);
+          background: rgba(59,130,246,0.12);
+          border: 1px solid rgba(59,130,246,0.24);
+          border-radius: 999px;
+          padding: 5px 9px;
         }
         .timeline-meta {
           display: flex;
@@ -202,6 +241,17 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
           height: 100%;
           object-fit: cover;
           display: block;
+        }
+        .timeline-card-media iframe {
+          width: 100%;
+          height: 100%;
+          border: none;
+          display: block;
+          background: rgba(8,12,18,0.8);
+        }
+        .timeline-card a {
+          color: #93c5fd;
+          text-decoration: underline;
         }
         .timeline-card-fallback {
           height: 100%;

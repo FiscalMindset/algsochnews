@@ -30,6 +30,11 @@ export default function LiveControlRoom({ script, currentTime = 0 }) {
         <div>
           <p className="control-room-kicker">Live production desk</p>
           <h2>Control Room</h2>
+          <div className="control-room-owners">
+            <span>Timeline: Visual Packaging Agent</span>
+            <span>Render: Video Generation Agent</span>
+            <span>Editorial: News Editor Agent</span>
+          </div>
         </div>
         <div className="control-room-time">
           <span>Now Playing</span>
@@ -93,6 +98,16 @@ export default function LiveControlRoom({ script, currentTime = 0 }) {
             ))}
           </div>
         </article>
+
+        <article className="control-card">
+          <div className="control-card-label"><Rows3 size={14} /> Desk ownership</div>
+          <div className="control-owner-list">
+            <div className="control-owner-item"><span>Timeline desk</span><strong>Visual Packaging Agent</strong></div>
+            <div className="control-owner-item"><span>Graphics + transitions</span><strong>Visual Packaging Agent</strong></div>
+            <div className="control-owner-item"><span>Transcript alignment</span><strong>Video Generation Agent</strong></div>
+            <div className="control-owner-item"><span>Final render</span><strong>Video Generation Agent</strong></div>
+          </div>
+        </article>
       </div>
 
       <style>{`
@@ -117,6 +132,20 @@ export default function LiveControlRoom({ script, currentTime = 0 }) {
         }
         .control-room-head h2 {
           font-size: 24px;
+        }
+        .control-room-owners {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 10px;
+        }
+        .control-room-owners span {
+          font-size: 11px;
+          color: rgba(255,255,255,0.72);
+          background: rgba(59,130,246,0.12);
+          border: 1px solid rgba(59,130,246,0.22);
+          border-radius: 999px;
+          padding: 5px 9px;
         }
         .control-room-time {
           display: flex;
@@ -299,6 +328,31 @@ export default function LiveControlRoom({ script, currentTime = 0 }) {
           border: 1px solid rgba(59,130,246,0.2);
           border-radius: 999px;
           padding: 5px 8px;
+        }
+        .control-owner-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .control-owner-item {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          align-items: center;
+          padding: 10px 12px;
+          border-radius: 12px;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.06);
+        }
+        .control-owner-item span {
+          font-size: 11px;
+          color: rgba(255,255,255,0.45);
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+        }
+        .control-owner-item strong {
+          font-size: 12px;
+          color: rgba(255,255,255,0.9);
         }
         @media (max-width: 980px) {
           .control-room-grid {
