@@ -22,3 +22,5 @@ outputs/
 .DS_Store
 ._*
 
+goal.pdf
+vertex_ai_app_key.json

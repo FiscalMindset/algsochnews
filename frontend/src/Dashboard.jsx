@@ -23,8 +23,10 @@ export default function Dashboard() {
     error,
     agents,
     activityLog,
+    traceEvents,
     review,
     workflowOverview,
+    modelVerification,
     generate,
     reset,
   } = useGenerate()
@@ -43,9 +45,9 @@ export default function Dashboard() {
   return (
     <main className="dashboard">
       <section className="hero fade-up">
-        <div className="hero-badge">LOQO-style broadcast packaging</div>
+        <div className="hero-badge">Algsoch News - live newsroom pipeline</div>
         <h1>
-          Multi-Agent Newsroom
+          Algsoch Newsroom
           <span> URL to Broadcast Screenplay + Video</span>
         </h1>
         <p>
@@ -82,13 +84,16 @@ export default function Dashboard() {
               status={status}
               agents={agents}
               workflowOverview={workflowOverview}
+              modelVerification={modelVerification}
             />
           </section>
           <AgentWorkflowPanel
             agents={agents}
             activityLog={activityLog}
+            traceEvents={traceEvents}
             review={visibleReview}
             workflowOverview={workflowOverview}
+            modelVerification={modelVerification}
           />
         </>
       )}
@@ -105,6 +110,7 @@ export default function Dashboard() {
                 <span>{script?.video_duration_sec}s runtime</span>
                 <span>{script?.segments?.length} segments</span>
                 <span>QA {(script?.qa_score * 100).toFixed(0)}%</span>
+                <span>Model {script?.model_verification?.selected_model || modelVerification?.selected_model || 'n/a'}</span>
               </div>
             </div>
             <div className="result-actions">
@@ -118,15 +124,17 @@ export default function Dashboard() {
           <AgentWorkflowPanel
             agents={result.agents || agents}
             activityLog={result.activity_log || activityLog}
+            traceEvents={result.trace_events || traceEvents}
             review={visibleReview}
             workflowOverview={script?.workflow_overview || workflowOverview}
+            modelVerification={script?.model_verification || result.model_verification || modelVerification}
           />
 
           {vidUrl && (
             <section className="fade-up fade-up-delay-1">
               <VideoPlayer
                 videoUrl={vidUrl}
-                title={script?.overall_headline || 'AI Generated News Broadcast'}
+                title={script?.overall_headline || 'Algsoch News Broadcast'}
                 activeSegment={activeSegment}
                 onProgress={(time) => setCurrentTime(time)}
               />

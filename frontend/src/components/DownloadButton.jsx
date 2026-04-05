@@ -14,7 +14,7 @@ export default function DownloadButton({ videoUrl, jobId }) {
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
       a.href     = url
-      a.download = `news_video_${jobId}.mp4`
+      a.download = `algsoch_news_${jobId}.mp4`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)

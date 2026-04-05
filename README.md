@@ -112,10 +112,11 @@ Example shape:
 ## Tech Stack
 
 - **Backend:** FastAPI, Python, Pydantic
+- **Orchestration:** LangGraph + LangChain with Gemini structured outputs
 - **Frontend:** React, Vite
 - **Media Pipeline:** FFmpeg, Pillow
 - **Content Extraction:** newspaper3k, readability-lxml, BeautifulSoup
-- **AI Refinement:** Gemini (optional)
+- **AI Refinement:** Gemini (model verified at runtime)
 - **TTS:** gTTS / pyttsx3 fallback flow
 
 ## Project Structure
@@ -198,7 +199,7 @@ If `5173` is busy, Vite will automatically move to another port such as `5174`.
 | Variable               | Purpose                                    | Example / Default    |
 | ---------------------- | ------------------------------------------ | -------------------- |
 | `GEMINI_API_KEY`     | Gemini API access for editorial refinement | `your_key_here`    |
-| `GEMINI_MODEL`       | Gemini model name                          | `gemini-1.5-flash` |
+| `GEMINI_MODEL`       | Gemini model name                          | `gemini-2.5-pro` |
 | `USE_GEMINI`         | Enable or disable Gemini refinement        | `true`             |
 | `TTS_ENGINE`         | Preferred TTS engine                       | `gtts`             |
 | `OUTPUT_DIR`         | Final generated assets directory           | `./outputs`        |

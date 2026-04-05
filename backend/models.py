@@ -36,6 +36,31 @@ class AgentArtifact(BaseModel):
     label: str
     value: Any
     kind: str = "text"
+    artifact_type: str = "output"
+    timestamp: Optional[float] = None
+
+
+class TraceEvent(BaseModel):
+    ts: float
+    agent_key: str
+    agent_name: str
+    event_type: str
+    message: str
+    input_payload: Any = None
+    tools: List[str] = Field(default_factory=list)
+    output_payload: Any = None
+    decision: Optional[str] = None
+    route_to: Optional[str] = None
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelVerification(BaseModel):
+    configured_model: str
+    selected_model: str
+    available_models: List[str] = Field(default_factory=list)
+    upgraded: bool = False
+    verification_ok: bool = False
+    note: str = ""
 
 
 class AgentTrace(BaseModel):
@@ -51,6 +76,12 @@ class AgentTrace(BaseModel):
     branch: Optional[str] = None
     outputs: List[AgentArtifact] = Field(default_factory=list)
     metrics: Dict[str, Any] = Field(default_factory=dict)
+    current_input: Any = None
+    tools_used: List[str] = Field(default_factory=list)
+    decisions: List[str] = Field(default_factory=list)
+    event_count: int = 0
+    node_visits: int = 0
+    llm_model: Optional[str] = None
     updated_at: Optional[float] = None
 
 
@@ -173,6 +204,8 @@ class Script(BaseModel):
     qa_score: float
     review: Optional[QAReview] = None
     workflow_overview: Dict[str, Any] = Field(default_factory=dict)
+    model_verification: Optional[ModelVerification] = None
+    route_history: List[str] = Field(default_factory=list)
 
 
 class GenerateResponse(BaseModel):
@@ -181,6 +214,8 @@ class GenerateResponse(BaseModel):
     script: Optional[Script] = None
     agents: List[AgentTrace] = Field(default_factory=list)
     activity_log: List[str] = Field(default_factory=list)
+    trace_events: List[TraceEvent] = Field(default_factory=list)
+    model_verification: Optional[ModelVerification] = None
     video_path: Optional[str] = None
     video_url: Optional[str] = None
     error: Optional[str] = None
@@ -194,6 +229,8 @@ class JobStatusResponse(BaseModel):
     message: str
     agents: List[AgentTrace] = Field(default_factory=list)
     activity_log: List[str] = Field(default_factory=list)
+    trace_events: List[TraceEvent] = Field(default_factory=list)
     workflow_overview: Dict[str, Any] = Field(default_factory=dict)
     review: Optional[QAReview] = None
+    model_verification: Optional[ModelVerification] = None
     result: Optional[GenerateResponse] = None

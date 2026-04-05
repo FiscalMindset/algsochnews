@@ -1,5 +1,5 @@
 /* =============================================================
-   Global Design System — AI News Video Generator
+  Global Design System — Algsoch News
    Dark Futuristic News Studio Theme
    ============================================================= */
 
@@ -90,8 +90,8 @@ body {
 
 .glass {
   background: var(--bg-glass);
-  backdrop-filter: blur(16px) saturate(1.5);
   -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  backdrop-filter: blur(16px) saturate(1.5);
   border: 1px solid var(--border-subtle);
 }
 

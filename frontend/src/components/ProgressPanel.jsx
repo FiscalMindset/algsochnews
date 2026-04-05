@@ -39,7 +39,7 @@ function AgentRail({ agents = [] }) {
   )
 }
 
-export default function ProgressPanel({ progress, message, status, agents = [], workflowOverview = null }) {
+export default function ProgressPanel({ progress, message, status, agents = [], workflowOverview = null, modelVerification = null }) {
   return (
     <div className="prog-panel glass fade-up">
       <div className="prog-header">
@@ -68,6 +68,13 @@ export default function ProgressPanel({ progress, message, status, agents = [], 
       {workflowOverview?.parallel_stage && (
         <div className="workflow-note">
           <strong>{workflowOverview.parallel_stage.label}:</strong> {workflowOverview.parallel_stage.tasks?.join(' + ')}
+        </div>
+      )}
+
+      {modelVerification?.selected_model && (
+        <div className="workflow-note">
+          <strong>Model:</strong> {modelVerification.selected_model}
+          {modelVerification.upgraded ? ' (auto-upgraded from configured model)' : ''}
         </div>
       )}
 

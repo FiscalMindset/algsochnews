@@ -205,7 +205,14 @@ export default function ScriptPreview({ script }) {
         <span>Runtime: {script.video_duration_sec}s</span>
         <span>QA: {(script.qa_score * 100).toFixed(0)}%</span>
         <span>Extractor: {script.article?.extraction_method}</span>
+        <span>Model: {script.model_verification?.selected_model || 'n/a'}</span>
       </div>
+
+      {script.route_history?.length > 0 && (
+        <div className="script-shell-meta">
+          <span>Route: {script.route_history.join(' -> ')}</span>
+        </div>
+      )}
 
       {viewMode === 'screenplay' ? (
         <>

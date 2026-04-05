@@ -13,8 +13,10 @@ export default function useGenerate() {
   const [error, setError]         = useState(null)
   const [agents, setAgents]       = useState([])
   const [activityLog, setActivityLog] = useState([])
+  const [traceEvents, setTraceEvents] = useState([])
   const [review, setReview]       = useState(null)
   const [workflowOverview, setWorkflowOverview] = useState(null)
+  const [modelVerification, setModelVerification] = useState(null)
   const pollRef                   = useRef(null)
 
   const stopPolling = useCallback(() => {
@@ -34,15 +36,19 @@ export default function useGenerate() {
         setStatus(data.status)
         setAgents(data.agents ?? [])
         setActivityLog(data.activity_log ?? [])
+        setTraceEvents(data.trace_events ?? [])
         setReview(data.review ?? null)
         setWorkflowOverview(data.workflow_overview ?? null)
+        setModelVerification(data.model_verification ?? null)
 
         if (data.status === 'done') {
           setResult(data.result)
           setAgents(data.result?.agents ?? data.agents ?? [])
           setActivityLog(data.result?.activity_log ?? data.activity_log ?? [])
+          setTraceEvents(data.result?.trace_events ?? data.trace_events ?? [])
           setReview(data.result?.script?.review ?? data.review ?? null)
           setWorkflowOverview(data.result?.script?.workflow_overview ?? data.workflow_overview ?? null)
+          setModelVerification(data.result?.model_verification ?? data.model_verification ?? null)
           stopPolling()
         } else if (data.status === 'failed') {
           setError(data.message || 'Generation failed')
@@ -64,14 +70,17 @@ export default function useGenerate() {
     setJobId(null)
     setAgents([])
     setActivityLog([])
+    setTraceEvents([])
     setReview(null)
     setWorkflowOverview(null)
+    setModelVerification(null)
 
     try {
       const data = await submitGenerate(url, useGemini, maxSegments)
       setJobId(data.job_id)
       setStatus('pending')
       setAgents(data.agents ?? [])
+      setTraceEvents(data.trace_events ?? [])
       setWorkflowOverview(data.workflow_overview ?? null)
       startPolling(data.job_id)
     } catch (err) {
@@ -91,8 +100,10 @@ export default function useGenerate() {
     setError(null)
     setAgents([])
     setActivityLog([])
+    setTraceEvents([])
     setReview(null)
     setWorkflowOverview(null)
+    setModelVerification(null)
   }, [stopPolling])
 
   return {
@@ -104,8 +115,10 @@ export default function useGenerate() {
     error,
     agents,
     activityLog,
+    traceEvents,
     review,
     workflowOverview,
+    modelVerification,
     generate,
     reset,
   }

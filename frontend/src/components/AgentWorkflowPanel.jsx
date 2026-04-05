@@ -28,11 +28,36 @@ function AgentCard({ agent, index }) {
       <h3 className="agent-name">{agent.name}</h3>
       <p className="agent-role">{agent.role}</p>
 
+      {agent.llm_model && <div className="agent-model">Model: {agent.llm_model}</div>}
+
       <div className="agent-progress-track">
         <div className="agent-progress-fill" style={{ width: `${agent.progress || 0}%` }} />
       </div>
 
       <p className="agent-summary">{agent.summary || 'Waiting for work allocation.'}</p>
+
+      {agent.current_input != null && (
+        <div className="agent-output">
+          <div className="agent-output-label">Input</div>
+          <pre className="agent-output-value">{renderValue(agent.current_input)}</pre>
+        </div>
+      )}
+
+      {agent.tools_used?.length > 0 && (
+        <div className="agent-tools">
+          {agent.tools_used.map((tool) => (
+            <span key={`${agent.key}-${tool}`} className="metric-chip">tool: {tool}</span>
+          ))}
+        </div>
+      )}
+
+      {agent.decisions?.length > 0 && (
+        <div className="agent-decisions">
+          {agent.decisions.slice(-3).map((decision, idx) => (
+            <div key={`${agent.key}-decision-${idx}`} className="agent-decision-item">{decision}</div>
+          ))}
+        </div>
+      )}
 
       <div className="agent-metrics">
         {agent.retry_count > 0 && <span className="metric-chip"><RefreshCw size={11} /> Retry {agent.retry_count}</span>}
@@ -51,6 +76,25 @@ function AgentCard({ agent, index }) {
         ))}
       </div>
     </article>
+  )
+}
+
+function TraceStream({ traceEvents = [] }) {
+  if (!traceEvents?.length) return null
+  return (
+    <section className="activity-panel">
+      <div className="activity-title">Trace events</div>
+      <div className="activity-list">
+        {traceEvents.slice(-14).reverse().map((event, index) => (
+          <div key={`${event.ts}-${index}`} className="activity-item">
+            <strong>{event.agent_name}</strong>
+            <div>{event.event_type} - {event.message}</div>
+            {event.decision && <div>decision: {event.decision}</div>}
+            {event.route_to && <div>route: {event.route_to}</div>}
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -119,8 +163,8 @@ function WorkflowMap({ workflowOverview }) {
   )
 }
 
-export default function AgentWorkflowPanel({ agents = [], activityLog = [], review = null, workflowOverview = null }) {
-  if (!agents.length && !activityLog.length && !review && !workflowOverview) return null
+export default function AgentWorkflowPanel({ agents = [], activityLog = [], traceEvents = [], review = null, workflowOverview = null, modelVerification = null }) {
+  if (!agents.length && !activityLog.length && !traceEvents.length && !review && !workflowOverview) return null
 
   return (
     <section className="workflow-panel fade-up">
@@ -131,6 +175,22 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], revi
         </div>
         <p className="workflow-sub">Extraction, editorial, packaging, and QA are surfaced so the client can inspect the work, not just the final answer.</p>
       </div>
+
+      {modelVerification?.selected_model && (
+        <section className="workflow-map">
+          <div className="workflow-map-title">Model verification</div>
+          <div className="workflow-parallel">
+            <strong>Configured:</strong> <span>{modelVerification.configured_model}</span>
+          </div>
+          <div className="workflow-parallel">
+            <strong>Selected:</strong> <span>{modelVerification.selected_model}</span>
+          </div>
+          <div className="workflow-parallel">
+            <strong>Status:</strong> <span>{modelVerification.verification_ok ? 'Verified' : 'Fallback mode'}</span>
+          </div>
+          {modelVerification.note && <div className="workflow-parallel"><span>{modelVerification.note}</span></div>}
+        </section>
+      )}
 
       <WorkflowMap workflowOverview={workflowOverview} />
 
@@ -149,6 +209,7 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], revi
             ))}
           </div>
         </div>
+        <TraceStream traceEvents={traceEvents} />
         <ReviewPanel review={review} />
       </div>
 
@@ -311,6 +372,31 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], revi
           line-height: 1.6;
           color: rgba(255,255,255,0.78);
         }
+        .agent-model {
+          display: inline-flex;
+          width: fit-content;
+          font-size: 11px;
+          color: #bfdbfe;
+          background: rgba(59,130,246,0.1);
+          border: 1px solid rgba(59,130,246,0.24);
+          border-radius: 999px;
+          padding: 4px 8px;
+        }
+        .agent-tools,
+        .agent-decisions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .agent-decision-item {
+          font-size: 11px;
+          line-height: 1.6;
+          color: rgba(255,255,255,0.74);
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 10px;
+          padding: 6px 8px;
+        }
         .agent-metrics {
           display: flex;
           flex-wrap: wrap;
@@ -356,7 +442,7 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], revi
         }
         .workflow-bottom {
           display: grid;
-          grid-template-columns: minmax(0, 1fr);
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 16px;
         }
         .activity-panel,
@@ -455,6 +541,9 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], revi
         @media (max-width: 900px) {
           .agent-grid,
           .review-grid {
+            grid-template-columns: 1fr;
+          }
+          .workflow-bottom {
             grid-template-columns: 1fr;
           }
         }

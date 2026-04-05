@@ -10,14 +10,14 @@ function Navbar() {
           <div className="nav-logo">
             <Zap size={18} fill="currentColor" />
           </div>
-          <span className="nav-name">NewsAI Studio</span>
-          <span className="nav-version">v1.0</span>
+          <span className="nav-name">Algsoch News</span>
+          <span className="nav-version">v3.0</span>
         </div>
         <div className="nav-links">
           <a href="/api/docs" target="_blank" rel="noopener" className="nav-link">
             API Docs
           </a>
-          <a href="#" className="nav-link nav-link--muted">About</a>
+          <a href="#" className="nav-link nav-link--muted">Newsroom</a>
         </div>
       </div>
       <style>{`
@@ -62,7 +62,7 @@ function Navbar() {
 function Footer() {
   return (
     <footer className="footer">
-      <p>Built with FastAPI · React · FFmpeg · Gemini AI</p>
+      <p>Algsoch News · FastAPI · LangGraph · LangChain · Gemini · FFmpeg</p>
       <style>{`
         .footer {
           text-align: center; padding: 32px;

@@ -34,7 +34,7 @@ def get_logger(name: str) -> logging.Logger:
 # ---------------------------------------------------------------------------
 class Config:
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
     USE_GEMINI: bool = os.getenv("USE_GEMINI", "true").lower() == "true"
     TTS_ENGINE: str = os.getenv("TTS_ENGINE", "gtts")         # gtts | pyttsx3
     OUTPUT_DIR: Path = Path(os.getenv("OUTPUT_DIR", "./outputs"))

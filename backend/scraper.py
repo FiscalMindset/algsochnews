@@ -22,11 +22,34 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 REQUEST_TIMEOUT = 15
+JUNK_LINE_RE = re.compile(
+    r"(cookie|subscribe|newsletter|sign in|advertis|privacy policy|terms of use|all rights reserved)",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
 # Individual extractors
 # ---------------------------------------------------------------------------
+
+
+def _clean_article_text(text: str) -> str:
+    text = sanitize_text(text)
+    # Drop repetitive junk lines that often survive extraction.
+    cleaned_lines = []
+    for chunk in re.split(r"(?<=[.!?])\s+|\n+", text):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if len(chunk.split()) < 4:
+            continue
+        if JUNK_LINE_RE.search(chunk):
+            continue
+        cleaned_lines.append(chunk)
+
+    text = " ".join(cleaned_lines)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 def _extract_newspaper(url: str) -> Optional[dict]:
     """Extractor 1: newspaper3k"""
@@ -59,7 +82,7 @@ def _extract_readability(url: str, html: str) -> Optional[dict]:
         raw = doc.summary()
         soup = BeautifulSoup(raw, "lxml")
         text = soup.get_text(separator=" ")
-        text = re.sub(r"\s+", " ", text).strip()
+        text = _clean_article_text(text)
         if len(text) < 200:
             return None
         return {
@@ -119,6 +142,7 @@ def _extract_json_ld(url: str, html: str) -> Optional[dict]:
                     published_date = item.get("datePublished")
 
         text = sanitize_text(" ".join(texts))
+        text = _clean_article_text(text)
         if len(text) < 200:
             return None
 
@@ -167,7 +191,7 @@ def _extract_beautifulsoup(url: str, html: str) -> Optional[dict]:
 
         paragraphs = body.find_all("p")
         text = " ".join(p.get_text(separator=" ", strip=True) for p in paragraphs)
-        text = re.sub(r"\s+", " ", text).strip()
+        text = _clean_article_text(text)
 
         if len(text) < 200:
             return None
@@ -190,6 +214,38 @@ def _extract_beautifulsoup(url: str, html: str) -> Optional[dict]:
         }
     except Exception as e:
         log.warning(f"BeautifulSoup failed: {e}")
+        return None
+
+
+def _extract_trafilatura(url: str, html: str) -> Optional[dict]:
+    """Extractor 5: trafilatura (optional)."""
+    try:
+        import trafilatura
+
+        extracted = trafilatura.extract(
+            html,
+            include_comments=False,
+            include_tables=False,
+            no_fallback=False,
+            output_format="json",
+        )
+        if not extracted:
+            return None
+        payload = json.loads(extracted)
+        text = _clean_article_text(payload.get("text", ""))
+        if len(text) < 200:
+            return None
+        return {
+            "title": payload.get("title", ""),
+            "text": text,
+            "top_image": None,
+            "images": [],
+            "authors": payload.get("author", []) if isinstance(payload.get("author"), list) else [],
+            "published_date": payload.get("date"),
+            "method": "trafilatura",
+        }
+    except Exception as e:
+        log.warning(f"trafilatura failed: {e}")
         return None
 
 
@@ -216,7 +272,7 @@ def _score(result: dict) -> float:
 
     # penalty for leftover markup / CMS junk
     lower = text.lower()
-    junk_hits = sum(lower.count(token) for token in (" href ", " src ", " cookie ", " subscribe ", " javascript "))
+    junk_hits = sum(lower.count(token) for token in (" href ", " src ", " cookie ", " subscribe ", " javascript ", " sign in "))
     markup_penalty = min(junk_hits * 0.03, 0.18)
 
     # metadata bonus
@@ -231,7 +287,13 @@ def _score(result: dict) -> float:
         meta_score += 0.05
 
     # method bonus
-    method_bonus = {"newspaper3k": 0.1, "readability": 0.05, "json_ld": 0.07, "beautifulsoup": 0.0}.get(
+    method_bonus = {
+        "newspaper3k": 0.1,
+        "readability": 0.07,
+        "json_ld": 0.07,
+        "beautifulsoup": 0.02,
+        "trafilatura": 0.08,
+    }.get(
         result.get("method", ""), 0.0
     )
 
@@ -263,6 +325,7 @@ def scrape_article(url: str) -> dict:
 
     r1 = _extract_newspaper(url)
     if r1:
+        r1["text"] = _clean_article_text(r1.get("text", ""))
         candidates.append((r1, _score(r1)))
 
     if html:
@@ -278,6 +341,10 @@ def scrape_article(url: str) -> dict:
         if r4:
             candidates.append((r4, _score(r4)))
 
+        r5 = _extract_trafilatura(url, html)
+        if r5:
+            candidates.append((r5, _score(r5)))
+
     if not candidates:
         raise ValueError("All extraction methods failed — could not parse article.")
 
@@ -292,12 +359,25 @@ def scrape_article(url: str) -> dict:
         best["text"] = " ".join(words[: config.MAX_ARTICLE_LENGTH // 5])
         log.info(f"Article truncated to {config.MAX_ARTICLE_LENGTH // 5} words")
 
-    best["text"] = sanitize_text(best["text"])
+    best["text"] = _clean_article_text(best["text"])
     best["title"] = sanitize_text(best.get("title", ""))
     best["url"] = url
     best["source_domain"] = extract_domain(url)
     best["word_count"] = len(best["text"].split())
     best["extraction_score"] = best_score
+    seen_images = set()
+    deduped_images = []
+    for img in best.get("images", []):
+        if not isinstance(img, str):
+            continue
+        if not img.startswith("http"):
+            continue
+        if img in seen_images:
+            continue
+        seen_images.add(img)
+        deduped_images.append(img)
+    best["images"] = deduped_images[:20]
+
     best["candidates"] = [
         {
             "method": item["method"],

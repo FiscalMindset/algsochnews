@@ -74,20 +74,22 @@ def _gemini_refine(
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
 
-        prompt = f"""You are a professional news anchor script writer.
-Improve the following {segment_type} narration for a TV news segment.
-Rules:
-- Keep it concise (under 60 words)
-- Use formal but engaging news broadcast language
-- Do NOT add commentary, opinions, or analysis not present in the source
-- Return ONLY the revised narration text, nothing else
+        prompt = f"""You are a senior TV newsroom script editor.
+    Rewrite the provided narration for a {segment_type} segment.
 
-Original narration:
-{raw_narration}
+    Hard rules:
+    - Keep under 60 words
+    - Maintain factual grounding to source context
+    - Use broadcast rhythm and concise wording
+    - Avoid robotic filler and legalistic phrasing
+    - Return plain text only
 
-Context from article:
-{context[:300]}
-"""
+    Original narration:
+    {raw_narration}
+
+    Source context:
+    {context[:900]}
+    """
         response = model.generate_content(prompt)
         refined = response.text.strip()
         if refined and len(refined) > 20:
@@ -107,6 +109,7 @@ def generate_narrations(
     headlines: List[str],
     article_text: str,
     use_gemini: bool = True,
+    model_name_override: Optional[str] = None,
 ) -> List[str]:
     """
     Generate narration for each segment.
@@ -115,6 +118,7 @@ def generate_narrations(
     log.info(f"Generating narrations for {len(segments)} segments (gemini={use_gemini})")
 
     use_gemini = use_gemini and config.USE_GEMINI and bool(config.GEMINI_API_KEY)
+    model_name = model_name_override or config.GEMINI_MODEL
 
     narrations: List[str] = []
 
@@ -133,7 +137,7 @@ def generate_narrations(
                 raw_narration=raw,
                 context=seg["text"],
                 segment_type=seg["segment_type"],
-                model_name=config.GEMINI_MODEL,
+                model_name=model_name,
                 api_key=config.GEMINI_API_KEY,
             )
             narrations.append(refined)
