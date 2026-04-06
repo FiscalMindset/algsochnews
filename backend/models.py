@@ -29,6 +29,10 @@ class GenerateRequest(BaseModel):
         "auto",
         description="Story transition grammar profile. auto infers from article content.",
     )
+    delivery_mode: Optional[Literal["full_video", "editorial_only"]] = Field(
+        "full_video",
+        description="Output mode: full_video renders MP4, editorial_only skips TTS/render and returns editorial artifacts only.",
+    )
 
 
 class ExtractionCandidate(BaseModel):
@@ -260,6 +264,7 @@ class Script(BaseModel):
     model_verification: Optional[ModelVerification] = None
     route_history: List[str] = Field(default_factory=list)
     llm_enhanced: bool = False
+    delivery_mode: Literal["full_video", "editorial_only"] = "full_video"
 
 
 class GenerateResponse(BaseModel):

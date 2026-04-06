@@ -10,6 +10,8 @@ import {
 
 const POLL_INTERVAL_MS = 2000
 const HEALTH_PING_INTERVAL_MS = 10000
+const MAX_TRANSIENT_POLL_FAILURES = 5
+const OFFLINE_GRACE_MS = 90000
 
 function isLikelyHomepageUrl(input) {
   try {
@@ -62,6 +64,7 @@ export default function useGenerate() {
   const pollRef                   = useRef(null)
   const pollFailureRef            = useRef(0)
   const pollInFlightRef           = useRef(false)
+  const offlineSinceRef           = useRef(null)
   const healthRef                 = useRef(null)
   const statusRef                 = useRef('idle')
   const backendStatusRef          = useRef('unknown')
@@ -183,6 +186,7 @@ export default function useGenerate() {
       try {
         const data = await pollStatus(id)
         pollFailureRef.current = 0
+        offlineSinceRef.current = null
         setBackendState('online', `Backend live (${getApiBaseUrl()})`)
         setProgress(data.progress ?? 0)
         setMessage(data.message ?? '')
@@ -215,9 +219,9 @@ export default function useGenerate() {
         pollFailureRef.current += 1
         const failures = pollFailureRef.current
 
-        if (failures <= 3) {
-          setBackendState('degraded', `Backend unstable (${failures}/3) - retrying status check...`)
-          setMessage(`Transient network issue while polling status (${failures}/3). Retrying...`)
+        if (failures <= MAX_TRANSIENT_POLL_FAILURES) {
+          setBackendState('degraded', `Backend unstable (${failures}/${MAX_TRANSIENT_POLL_FAILURES}) - retrying status check...`)
+          setMessage(`Transient network issue while polling status (${failures}/${MAX_TRANSIENT_POLL_FAILURES}). Retrying...`)
           pollInFlightRef.current = false
           return
         }
@@ -232,8 +236,27 @@ export default function useGenerate() {
 
         if (backendStillAlive) {
           pollFailureRef.current = 0
+          offlineSinceRef.current = null
           setBackendState('online', `Backend live (${getApiBaseUrl()}) - connection recovered`)
           setMessage('Recovered connection to backend. Continuing generation...')
+          pollInFlightRef.current = false
+          return
+        }
+
+        if (!offlineSinceRef.current) {
+          offlineSinceRef.current = Date.now()
+        }
+
+        const offlineMs = Date.now() - Number(offlineSinceRef.current || 0)
+        const remainingMs = Math.max(0, OFFLINE_GRACE_MS - offlineMs)
+        const remainingSeconds = Math.ceil(remainingMs / 1000)
+
+        if (offlineMs < OFFLINE_GRACE_MS) {
+          setBackendState(
+            'degraded',
+            `Connection interrupted (${getApiBaseUrl()}) - reconnecting... (${remainingSeconds}s grace)`,
+          )
+          setMessage('Connection dropped while generation is running. Retrying automatically...')
           pollInFlightRef.current = false
           return
         }
@@ -242,7 +265,7 @@ export default function useGenerate() {
           'offline',
           `Backend unreachable (${getApiBaseUrl()}) - auto-checking every ${Math.round(HEALTH_PING_INTERVAL_MS / 1000)}s`,
         )
-        setError('Lost connection to backend during generation. We will keep checking and show when backend is live again.')
+        setError('Lost connection to backend for too long during generation. The run may still be processing on the server; refresh status in a moment or retry.')
         setStatus('failed')
         stopPolling()
       } finally {
@@ -251,8 +274,16 @@ export default function useGenerate() {
     }, POLL_INTERVAL_MS)
   }, [setBackendState, stopPolling])
 
-  const generate = useCallback(async (url, useGemini, maxSegments, transitionIntensity = 'standard', transitionProfile = 'auto') => {
+  const generate = useCallback(async (
+    url,
+    useGemini,
+    maxSegments,
+    transitionIntensity = 'standard',
+    transitionProfile = 'auto',
+    deliveryMode = 'full_video',
+  ) => {
     const normalizedUrl = url.trim()
+    const normalizedDeliveryMode = deliveryMode === 'editorial_only' ? 'editorial_only' : 'full_video'
     articleUrlRef.current = normalizedUrl
     setArticleUrl(normalizedUrl)
     setStatus('pending')
@@ -272,13 +303,31 @@ export default function useGenerate() {
 
     try {
       await checkBackend({ warmupRetries: 3 })
-      const data = await submitGenerate(normalizedUrl, useGemini, maxSegments, transitionIntensity, transitionProfile)
+      const data = await submitGenerate(
+        normalizedUrl,
+        useGemini,
+        maxSegments,
+        transitionIntensity,
+        transitionProfile,
+        normalizedDeliveryMode,
+      )
       setBackendState('online', `Backend live (${getApiBaseUrl()}) - job accepted`)
       setJobId(data.job_id)
       setStatus('pending')
       setAgents(data.agents ?? [])
       setTraceEvents(data.trace_events ?? [])
-      setWorkflowOverview(data.workflow_overview ?? null)
+      setWorkflowOverview(
+        data.workflow_overview
+          ? {
+              ...data.workflow_overview,
+              delivery_mode: normalizedDeliveryMode,
+              video_required: normalizedDeliveryMode === 'full_video',
+            }
+          : {
+              delivery_mode: normalizedDeliveryMode,
+              video_required: normalizedDeliveryMode === 'full_video',
+            },
+      )
       startPolling(data.job_id)
     } catch (err) {
       if (!err.response) {
@@ -306,6 +355,7 @@ export default function useGenerate() {
     setArticleUrl('')
     articleUrlRef.current = ''
     setJobId(null)
+    offlineSinceRef.current = null
     setStatus('idle')
     setProgress(0)
     setMessage('')

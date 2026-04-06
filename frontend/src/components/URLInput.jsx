@@ -29,6 +29,7 @@ export default function URLInput({
   const [maxSegments, setMaxSegments]   = useState(7)
   const [transitionIntensity, setTransitionIntensity] = useState('standard')
   const [transitionProfile, setTransitionProfile] = useState('auto')
+  const [deliveryMode, setDeliveryMode] = useState('full_video')
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const valid   = isValidUrl(url)
@@ -52,7 +53,7 @@ export default function URLInput({
   function handleSubmit(e) {
     e.preventDefault()
     if (!valid || disabled) return
-    onSubmit(url.trim(), useGemini, maxSegments, transitionIntensity, transitionProfile)
+    onSubmit(url.trim(), useGemini, maxSegments, transitionIntensity, transitionProfile, deliveryMode)
   }
 
   return (
@@ -160,6 +161,19 @@ export default function URLInput({
                 <option value="sports">Sports</option>
               </select>
             </label>
+
+            <label className="adv-row adv-row--stack">
+              <span>Delivery mode</span>
+              <select
+                id="delivery-mode-select"
+                value={deliveryMode}
+                onChange={e => setDeliveryMode(e.target.value)}
+                className="transition-select"
+              >
+                <option value="full_video">Full video (script + mp4)</option>
+                <option value="editorial_only">Editorial only (no mp4)</option>
+              </select>
+            </label>
           </div>
         )}
 
@@ -177,7 +191,7 @@ export default function URLInput({
           ) : (
             <>
               <span className="btn-icon">⚡</span>
-              <span>Generate Video</span>
+              <span>{deliveryMode === 'editorial_only' ? 'Generate Editorial Package' : 'Generate Video'}</span>
             </>
           )}
         </button>
@@ -201,6 +215,7 @@ export default function URLInput({
           border: 1px solid rgba(148,163,184,0.35);
           background: rgba(148,163,184,0.14);
           color: rgba(226,232,240,0.95);
+          max-width: 100%;
         }
         .backend-pill--unknown {
           border-color: rgba(148,163,184,0.35);
@@ -231,10 +246,12 @@ export default function URLInput({
           font-size: 11px;
           color: rgba(255,255,255,0.52);
           font-family: var(--font-mono);
-          margin-top: -2px;
+          margin-top: 4px;
+          margin-bottom: 10px;
+          line-height: 1.55;
           overflow-wrap: anywhere;
         }
-        .url-form { display: flex; flex-direction: column; gap: 14px; }
+        .url-form { display: flex; flex-direction: column; gap: 14px; margin-top: 2px; }
         .url-field {
           display: flex; align-items: center; gap: 12px;
           background: rgba(255,255,255,0.04);
@@ -351,6 +368,27 @@ export default function URLInput({
           box-shadow: none;
         }
         .btn-icon { font-size: 18px; }
+
+        @media (max-width: 760px) {
+          .url-input-label {
+            gap: 8px;
+            margin-bottom: 8px;
+          }
+          .backend-pill {
+            flex-basis: 100%;
+            width: fit-content;
+          }
+          .backend-note {
+            margin-top: 2px;
+            margin-bottom: 12px;
+          }
+          .url-field {
+            padding: 12px 14px;
+          }
+          .url-input {
+            font-size: 13px;
+          }
+        }
       `}</style>
     </div>
   )

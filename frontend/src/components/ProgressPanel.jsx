@@ -2,7 +2,7 @@
 import { CheckCircle, XCircle, Loader } from 'lucide-react'
 import { buildExecutionConsoleLines, formatClock, retrySummary } from './consoleUtils'
 
-const STEPS = [
+const STEPS_FULL_VIDEO = [
   { label: 'Extracting article',   minPct: 5  },
   { label: 'Segmenting content',   minPct: 15 },
   { label: 'Generating headlines', minPct: 25 },
@@ -12,6 +12,16 @@ const STEPS = [
   { label: 'Synthesizing audio',   minPct: 65 },
   { label: 'Rendering video',      minPct: 78 },
   { label: 'Finalizing output',    minPct: 92 },
+]
+
+const STEPS_EDITORIAL_ONLY = [
+  { label: 'Extracting article',            minPct: 5  },
+  { label: 'Segmenting content',            minPct: 15 },
+  { label: 'Generating headlines',          minPct: 25 },
+  { label: 'Writing narrations',            minPct: 35 },
+  { label: 'QA & scoring',                  minPct: 44 },
+  { label: 'Planning visuals',              minPct: 55 },
+  { label: 'Finalizing editorial package',  minPct: 82 },
 ]
 
 function stepStatus(step, progress, status) {
@@ -77,6 +87,10 @@ export default function ProgressPanel({
     offline: 'backend-note--offline',
     unknown: 'backend-note--unknown',
   }[backendStatus] || 'backend-note--unknown'
+
+  const activeSteps = workflowOverview?.video_required === false
+    ? STEPS_EDITORIAL_ONLY
+    : STEPS_FULL_VIDEO
 
   return (
     <div className="prog-panel glass fade-up">
@@ -171,7 +185,7 @@ export default function ProgressPanel({
       </div>
 
       <div className="steps">
-        {STEPS.map((step, i) => {
+        {activeSteps.map((step, i) => {
           const st = stepStatus(step, progress, status)
           return (
             <div key={i} className={`step step--${st}`}>

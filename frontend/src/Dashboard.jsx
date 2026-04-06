@@ -10,7 +10,7 @@ import TimelineView from './components/TimelineView.jsx'
 import URLInput from './components/URLInput.jsx'
 import VideoPlayer from './components/VideoPlayer.jsx'
 import useGenerate from './hooks/useGenerate.js'
-import { clientPackUrl, videoUrl } from './api/client.js'
+import { clientPackUrl, resolveAssetUrl, videoUrl } from './api/client.js'
 
 export default function Dashboard() {
   const [currentTime, setCurrentTime] = useState(0)
@@ -42,7 +42,11 @@ export default function Dashboard() {
   const isFailed = status === 'failed'
   const isProcessing = status === 'pending' || status === 'processing'
   const script = result?.script
-  const vidUrl = jobId ? videoUrl(jobId) : null
+  const deliveryMode = script?.delivery_mode || workflowOverview?.delivery_mode || 'full_video'
+  const isEditorialOnly = deliveryMode === 'editorial_only'
+  const vidUrl = result?.video_url
+    ? resolveAssetUrl(result.video_url)
+    : (!isEditorialOnly && jobId ? videoUrl(jobId) : null)
   const sourceUrl = script?.article_url || articleUrl
   const visibleReview = script?.review || review
   const activeSegment =
@@ -180,13 +184,14 @@ export default function Dashboard() {
             <div className="result-meta">
               <div className="result-title">
                 <Tv size={18} />
-                <span>Broadcast Package Ready</span>
+                <span>{isEditorialOnly ? 'Editorial Package Ready' : 'Broadcast Package Ready'}</span>
               </div>
               <div className="result-stats">
                 <span>{script?.video_duration_sec}s runtime</span>
                 <span>{script?.segments?.length} segments</span>
                 <span>QA {(script?.qa_score * 100).toFixed(0)}%</span>
                 <span>Model {script?.model_verification?.selected_model || modelVerification?.selected_model || 'n/a'}</span>
+                <span>Mode {isEditorialOnly ? 'editorial-only' : 'full-video'}</span>
                 {sourceUrl && <span className="result-url-chip">Source URL visible below</span>}
               </div>
               {sourceUrl && (

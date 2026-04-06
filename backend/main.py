@@ -10,7 +10,7 @@ import logging
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 import aiofiles
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -184,6 +184,7 @@ def _build_compliance_report(
     packaged_segments: List[dict],
     route_history: List[str],
     video_ready: bool,
+    video_required: bool,
 ) -> dict:
     sequential_path = workflow_overview.get("sequential_path", []) or []
     parallel_stage = workflow_overview.get("parallel_stage") or {}
@@ -268,8 +269,10 @@ def _build_compliance_report(
         _compliance_check(
             "output_package",
             "Client-ready output package",
-            bool(packaged_segments) and video_ready,
-            f"segments={len(packaged_segments)}; video_ready={video_ready}",
+            bool(packaged_segments) and (video_ready if video_required else True),
+            (
+                f"segments={len(packaged_segments)}; video_ready={video_ready}; video_required={video_required}"
+            ),
         ),
     ]
 
@@ -294,14 +297,19 @@ def _write_client_pack(out_dir: Path, job_id: str) -> Path:
     zip_path = out_dir / "client_pack.zip"
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        included_files: List[str] = []
         if script_path.exists():
             archive.write(script_path, arcname="script.json")
+            included_files.append("script.json")
         if video_path.exists():
             archive.write(video_path, arcname="final_video.mp4")
+            included_files.append("final_video.mp4")
         if audit_path.exists():
             archive.write(audit_path, arcname="all_agents_audit.json")
+            included_files.append("all_agents_audit.json")
         if compliance_path.exists():
             archive.write(compliance_path, arcname="compliance_report.json")
+            included_files.append("compliance_report.json")
 
         archive.writestr(
             "README.txt",
@@ -309,7 +317,7 @@ def _write_client_pack(out_dir: Path, job_id: str) -> Path:
                 f"Algsoch client delivery pack\n"
                 f"job_id: {job_id}\n"
                 f"generated_at: {_now_iso()}\n"
-                f"contents: script.json, final_video.mp4, all_agents_audit.json, compliance_report.json\n"
+                f"contents: {', '.join(included_files) if included_files else 'none'}\n"
             ),
         )
 
@@ -391,6 +399,11 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         llm_enhanced = bool(req.use_gemini and config.USE_GEMINI and bool(config.GEMINI_API_KEY))
         transition_intensity = (req.transition_intensity or "standard").lower()
         transition_profile = (req.transition_profile or "auto").lower()
+        delivery_mode_raw = (req.delivery_mode or "full_video").lower()
+        delivery_mode: Literal["full_video", "editorial_only"] = (
+            "editorial_only" if delivery_mode_raw == "editorial_only" else "full_video"
+        )
+        video_required = delivery_mode == "full_video"
 
         trace_bridge = TraceBridge(job_id=job_id, article_url=req.article_url)
         job["_trace_bridge"] = trace_bridge
@@ -402,6 +415,8 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         workflow_overview["llm_enhanced"] = llm_enhanced
         workflow_overview["transition_intensity"] = transition_intensity
         workflow_overview["transition_profile"] = transition_profile
+        workflow_overview["delivery_mode"] = delivery_mode
+        workflow_overview["video_required"] = video_required
         job["workflow_overview"] = workflow_overview
 
         update(8, f"Model selected: {model_verification.selected_model}. Starting LangGraph execution...", "editor")
@@ -448,213 +463,268 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         overall_headline = graph_state["overall_headline"]
         packaged_segments = graph_state["packaged_segments"]
         render_review_payload = None
+        transcript_cues = list(graph_state.get("transcript_cues", []) or [])
+        rundown = list(graph_state.get("rundown", []) or [])
+        final_video = ""
+        final_video_path: Path | None = None
 
         target_runtime = segments_raw[-1]["end_time"] if segments_raw else 0
-        set_agent_state(
-            job,
-            "video_generation",
-            status="running",
-            progress=18,
-            summary="Synthesizing audio and preparing final video render.",
-        )
-        set_agent_tools(
-            job,
-            "video_generation",
-            [
-                "tts synthesis",
-                "transcript aligner",
-                "ffmpeg renderer",
-            ],
-        )
-        set_agent_input(
-            job,
-            "video_generation",
-            {
-                "segment_count": len(segments_raw),
-                "target_runtime_sec": target_runtime,
-            },
-        )
-        record_trace_event(
-            job,
-            "video_generation",
-            "node_start",
-            "Video generation stage started: audio synthesis and final render pipeline.",
-            input_payload={
-                "segment_count": len(segments_raw),
-                "target_runtime_sec": target_runtime,
-            },
-            tools=["synthesize_all", "TranscriptAligner", "render_video"],
-        )
+        if video_required:
+            set_agent_state(
+                job,
+                "video_generation",
+                status="running",
+                progress=18,
+                summary="Synthesizing audio and preparing final video render.",
+            )
+            set_agent_tools(
+                job,
+                "video_generation",
+                [
+                    "tts synthesis",
+                    "transcript aligner",
+                    "ffmpeg renderer",
+                ],
+            )
+            set_agent_input(
+                job,
+                "video_generation",
+                {
+                    "segment_count": len(segments_raw),
+                    "target_runtime_sec": target_runtime,
+                },
+            )
+            record_trace_event(
+                job,
+                "video_generation",
+                "node_start",
+                "Video generation stage started: audio synthesis and final render pipeline.",
+                input_payload={
+                    "segment_count": len(segments_raw),
+                    "target_runtime_sec": target_runtime,
+                },
+                tools=["synthesize_all", "TranscriptAligner", "render_video"],
+            )
 
-        update(72, "Synthesizing anchor audio...", "video_generation")
-        record_trace_event(
-            job,
-            "video_generation",
-            "audio_synthesis_start",
-            "Started anchor audio synthesis for all segments.",
-            metrics={"segment_count": len(segments_raw)},
-        )
-        durations = [seg["duration"] for seg in segments_raw]
-        audio_paths = await loop.run_in_executor(
-            None,
-            synthesize_all,
-            narrations,
-            durations,
-            job_id,
-        )
-        append_agent_output(job, "video_generation", "Audio clips", len(audio_paths), kind="metric")
-        record_trace_event(
-            job,
-            "video_generation",
-            "audio_synthesis_complete",
-            "Audio synthesis complete.",
-            output_payload={"audio_clips": len(audio_paths)},
-        )
+            update(72, "Synthesizing anchor audio...", "video_generation")
+            record_trace_event(
+                job,
+                "video_generation",
+                "audio_synthesis_start",
+                "Started anchor audio synthesis for all segments.",
+                metrics={"segment_count": len(segments_raw)},
+            )
+            durations = [seg["duration"] for seg in segments_raw]
+            audio_paths = await loop.run_in_executor(
+                None,
+                synthesize_all,
+                narrations,
+                durations,
+                job_id,
+            )
+            append_agent_output(job, "video_generation", "Audio clips", len(audio_paths), kind="metric")
+            record_trace_event(
+                job,
+                "video_generation",
+                "audio_synthesis_complete",
+                "Audio synthesis complete.",
+                output_payload={"audio_clips": len(audio_paths)},
+            )
 
-        aligner = TranscriptAligner(mode="paced")
-        transcript_cues = aligner.align(packaged_segments, audio_durations=durations)
-        packaged_segments = attach_transcript_to_segments(packaged_segments, transcript_cues)
-        rundown = build_rundown(packaged_segments)
-        append_agent_output(job, "video_generation", "Transcript cues", len(transcript_cues), kind="metric")
-        append_agent_output(job, "packaging", "Transcript cues", len(transcript_cues), kind="metric")
-        append_agent_output(job, "packaging", "Rundown items", len(rundown), kind="metric")
+            aligner = TranscriptAligner(mode="paced")
+            transcript_cues = aligner.align(packaged_segments, audio_durations=durations)
+            packaged_segments = attach_transcript_to_segments(packaged_segments, transcript_cues)
+            rundown = build_rundown(packaged_segments)
+            append_agent_output(job, "video_generation", "Transcript cues", len(transcript_cues), kind="metric")
+            append_agent_output(job, "packaging", "Transcript cues", len(transcript_cues), kind="metric")
+            append_agent_output(job, "packaging", "Rundown items", len(rundown), kind="metric")
 
-        update(86, "Rendering final broadcast video...", "video_generation")
-        record_trace_event(
-            job,
-            "video_generation",
-            "video_render_start",
-            "Started final FFmpeg render.",
-            metrics={"runtime_sec": target_runtime},
-        )
-        final_video = await loop.run_in_executor(
-            None,
-            render_video,
-            segments_raw,
-            visuals,
-            narrations,
-            audio_paths,
-            [seg["main_headline"] for seg in packaged_segments],
-            overall_headline,
-            job_id,
-        )
-        job["preview_video_url"] = f"/outputs/{job_id}/final_video.mp4"
-        append_agent_output(job, "video_generation", "Final video", f"/outputs/{job_id}/final_video.mp4")
-        record_trace_event(
-            job,
-            "video_generation",
-            "video_render_complete",
-            "Final FFmpeg render complete.",
-            output_payload={"video_url": f"/outputs/{job_id}/final_video.mp4"},
-        )
-        record_trace_event(
-            job,
-            "video_generation",
-            "node_complete",
-            "Video generation completed with synthesized audio and rendered MP4.",
-            output_payload={
-                "audio_clips": len(audio_paths),
-                "transcript_cues": len(transcript_cues),
-                "video_url": f"/outputs/{job_id}/final_video.mp4",
-                "runtime_sec": target_runtime,
-            },
-        )
-        set_agent_state(
-            job,
-            "video_generation",
-            status="done",
-            progress=100,
-            summary="Audio, transcript alignment, and final render completed.",
-            metrics={
-                "audio_clips": len(audio_paths),
-                "runtime_sec": round(target_runtime, 2),
-            },
-        )
+            update(86, "Rendering final broadcast video...", "video_generation")
+            record_trace_event(
+                job,
+                "video_generation",
+                "video_render_start",
+                "Started final FFmpeg render.",
+                metrics={"runtime_sec": target_runtime},
+            )
+            final_video = await loop.run_in_executor(
+                None,
+                render_video,
+                segments_raw,
+                visuals,
+                narrations,
+                audio_paths,
+                [seg["main_headline"] for seg in packaged_segments],
+                overall_headline,
+                job_id,
+            )
+            final_video_path = Path(final_video)
+            job["preview_video_url"] = f"/outputs/{job_id}/final_video.mp4"
+            append_agent_output(job, "video_generation", "Final video", f"/outputs/{job_id}/final_video.mp4")
+            record_trace_event(
+                job,
+                "video_generation",
+                "video_render_complete",
+                "Final FFmpeg render complete.",
+                output_payload={"video_url": f"/outputs/{job_id}/final_video.mp4"},
+            )
+            record_trace_event(
+                job,
+                "video_generation",
+                "node_complete",
+                "Video generation completed with synthesized audio and rendered MP4.",
+                output_payload={
+                    "audio_clips": len(audio_paths),
+                    "transcript_cues": len(transcript_cues),
+                    "video_url": f"/outputs/{job_id}/final_video.mp4",
+                    "runtime_sec": target_runtime,
+                },
+            )
+            set_agent_state(
+                job,
+                "video_generation",
+                status="done",
+                progress=100,
+                summary="Audio, transcript alignment, and final render completed.",
+                metrics={
+                    "audio_clips": len(audio_paths),
+                    "runtime_sec": round(target_runtime, 2),
+                },
+            )
 
-        update(92, "Running render QA checks for final media quality...", "render_review")
-        set_agent_state(
-            job,
-            "render_review",
-            status="running",
-            progress=35,
-            summary="Checking runtime fidelity, stream integrity, captions, and narration quality.",
-        )
-        set_agent_tools(
-            job,
-            "render_review",
-            [
-                "ffprobe",
-                "render quality rubric",
-                "gemini render critique",
-            ],
-        )
-        set_agent_input(
-            job,
-            "render_review",
-            {
-                "target_runtime_sec": target_runtime,
-                "segment_count": len(packaged_segments),
-                "transcript_cues": len(transcript_cues),
-            },
-        )
-        record_trace_event(
-            job,
-            "render_review",
-            "node_start",
-            "Started render QA review stage.",
-            input_payload={
-                "target_runtime_sec": target_runtime,
-                "segment_count": len(packaged_segments),
-                "transcript_cues": len(transcript_cues),
-            },
-            tools=["ffprobe", "render quality rubric", "gemini render critique"],
-        )
+            update(92, "Running render QA checks for final media quality...", "render_review")
+            set_agent_state(
+                job,
+                "render_review",
+                status="running",
+                progress=35,
+                summary="Checking runtime fidelity, stream integrity, captions, and narration quality.",
+            )
+            set_agent_tools(
+                job,
+                "render_review",
+                [
+                    "ffprobe",
+                    "render quality rubric",
+                    "gemini render critique",
+                ],
+            )
+            set_agent_input(
+                job,
+                "render_review",
+                {
+                    "target_runtime_sec": target_runtime,
+                    "segment_count": len(packaged_segments),
+                    "transcript_cues": len(transcript_cues),
+                },
+            )
+            record_trace_event(
+                job,
+                "render_review",
+                "node_start",
+                "Started render QA review stage.",
+                input_payload={
+                    "target_runtime_sec": target_runtime,
+                    "segment_count": len(packaged_segments),
+                    "transcript_cues": len(transcript_cues),
+                },
+                tools=["ffprobe", "render quality rubric", "gemini render critique"],
+            )
 
-        render_review_payload = await loop.run_in_executor(
-            None,
-            lambda: evaluate_render_quality(
-                video_path=final_video,
-                segments=packaged_segments,
-                transcript_cues=transcript_cues,
-                target_runtime_sec=target_runtime,
-                use_gemini=bool(req.use_gemini),
-                model_name=model_verification.selected_model,
-                api_key=config.GEMINI_API_KEY,
-            ),
-        )
+            render_review_payload = await loop.run_in_executor(
+                None,
+                lambda: evaluate_render_quality(
+                    video_path=final_video,
+                    segments=packaged_segments,
+                    transcript_cues=transcript_cues,
+                    target_runtime_sec=target_runtime,
+                    use_gemini=bool(req.use_gemini),
+                    model_name=model_verification.selected_model,
+                    api_key=config.GEMINI_API_KEY,
+                ),
+            )
 
-        append_agent_output(job, "render_review", "Render QA score", render_review_payload.get("overall_score", 0), kind="metric")
-        append_agent_output(job, "render_review", "Render QA summary", render_review_payload.get("summary", ""))
-        append_agent_output(job, "render_review", "Render QA report", render_review_payload, kind="json")
-        record_trace_event(
-            job,
-            "render_review",
-            "node_complete",
-            "Render QA review completed.",
-            output_payload={
-                "overall_score": render_review_payload.get("overall_score"),
-                "passed": render_review_payload.get("passed"),
-                "verdict": render_review_payload.get("verdict"),
-            },
-            decision="pass" if render_review_payload.get("passed") else "review",
-            route_to="finalize",
-        )
-        set_agent_state(
-            job,
-            "render_review",
-            status="done",
-            progress=100,
-            summary=render_review_payload.get("summary", "Render QA completed."),
-            metrics={
-                "overall_score": render_review_payload.get("overall_score", 0),
-                "passed": render_review_payload.get("passed", False),
-            },
-        )
+            append_agent_output(job, "render_review", "Render QA score", render_review_payload.get("overall_score", 0), kind="metric")
+            append_agent_output(job, "render_review", "Render QA summary", render_review_payload.get("summary", ""))
+            append_agent_output(job, "render_review", "Render QA report", render_review_payload, kind="json")
+            record_trace_event(
+                job,
+                "render_review",
+                "node_complete",
+                "Render QA review completed.",
+                output_payload={
+                    "overall_score": render_review_payload.get("overall_score"),
+                    "passed": render_review_payload.get("passed"),
+                    "verdict": render_review_payload.get("verdict"),
+                },
+                decision="pass" if render_review_payload.get("passed") else "review",
+                route_to="finalize",
+            )
+            set_agent_state(
+                job,
+                "render_review",
+                status="done",
+                progress=100,
+                summary=render_review_payload.get("summary", "Render QA completed."),
+                metrics={
+                    "overall_score": render_review_payload.get("overall_score", 0),
+                    "passed": render_review_payload.get("passed", False),
+                },
+            )
+        else:
+            job["preview_video_url"] = None
+            update(86, "Editorial-only mode selected. Skipping audio and video rendering.", "video_generation")
+            append_agent_output(job, "video_generation", "Delivery mode", delivery_mode)
+            append_agent_output(job, "video_generation", "Video stage", "Skipped in editorial-only mode.")
+            record_trace_event(
+                job,
+                "video_generation",
+                "node_complete",
+                "Skipped video generation because editorial-only mode was requested.",
+                output_payload={
+                    "delivery_mode": delivery_mode,
+                    "skipped": True,
+                    "transcript_cues": len(transcript_cues),
+                },
+                decision="skip",
+                route_to="finalize",
+            )
+            set_agent_state(
+                job,
+                "video_generation",
+                status="done",
+                progress=100,
+                summary="Skipped: editorial-only mode (no TTS/render).",
+                metrics={"skipped": True, "delivery_mode": delivery_mode},
+                branch="editorial_only",
+            )
+
+            update(90, "Skipping render QA for editorial-only output.", "render_review")
+            append_agent_output(job, "render_review", "Delivery mode", delivery_mode)
+            append_agent_output(job, "render_review", "Render QA", "Skipped in editorial-only mode.")
+            record_trace_event(
+                job,
+                "render_review",
+                "node_complete",
+                "Skipped render QA because no final video was requested.",
+                output_payload={"delivery_mode": delivery_mode, "skipped": True},
+                decision="skip",
+                route_to="finalize",
+            )
+            set_agent_state(
+                job,
+                "render_review",
+                status="done",
+                progress=100,
+                summary="Skipped: editorial-only mode (no final video).",
+                metrics={"skipped": True, "delivery_mode": delivery_mode},
+                branch="editorial_only",
+            )
 
         update(95, "Saving script JSON and outputs...")
         out_dir = config.OUTPUT_DIR / job_id
         out_dir.mkdir(parents=True, exist_ok=True)
-        final_video_path = Path(final_video)
+        video_ready = bool(final_video_path and final_video_path.exists())
 
         review_payload = review.model_dump() if review is not None else None
         workflow_overview = dict(job.get("workflow_overview", {}))
@@ -663,11 +733,13 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             review_payload=review_payload,
             packaged_segments=packaged_segments,
             route_history=graph_state.get("route_history", []),
-            video_ready=final_video_path.exists(),
+            video_ready=video_ready,
+            video_required=video_required,
         )
         workflow_overview["compliance_report"] = compliance_report
         workflow_overview["final_runtime_sec"] = round(float(target_runtime or 0.0), 2)
         workflow_overview["route_history"] = graph_state.get("route_history", [])
+        workflow_overview["video_ready"] = video_ready
         job["workflow_overview"] = workflow_overview
 
         article_model = ArticleData(
@@ -704,6 +776,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             model_verification=model_verification,
             route_history=graph_state.get("route_history", []),
             llm_enhanced=llm_enhanced,
+            delivery_mode=delivery_mode,
         )
 
         script_path = out_dir / "script.json"
@@ -737,8 +810,8 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             trace_events=[TraceEvent(**item) for item in snapshot_trace_events(job)],
             runtime_logs=job.get("runtime_logs", []),
             model_verification=model_verification,
-            video_path=str(final_video_path),
-            video_url=f"/outputs/{job_id}/final_video.mp4",
+            video_path=str(final_video_path) if video_ready and final_video_path else None,
+            video_url=f"/outputs/{job_id}/final_video.mp4" if video_ready else None,
             processing_time=elapsed,
         )
 
@@ -747,7 +820,8 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
                 {
                     "job_id": job_id,
                     "qa_score": qa_score,
-                    "video_url": f"/outputs/{job_id}/final_video.mp4",
+                    "video_url": f"/outputs/{job_id}/final_video.mp4" if video_ready else None,
+                    "delivery_mode": delivery_mode,
                     "selected_model": model_verification.selected_model,
                 }
             )
@@ -756,7 +830,11 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             {
                 "status": "done",
                 "progress": 100,
-                "message": "Algsoch News package generated successfully.",
+                "message": (
+                    "Algsoch editorial package generated successfully."
+                    if not video_required
+                    else "Algsoch News package generated successfully."
+                ),
                 "result": result.model_dump(),
                 "review": review_payload,
                 "model_verification": model_verification.model_dump(),

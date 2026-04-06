@@ -43,7 +43,8 @@ export async function submitGenerate(
   useGemini = true,
   maxSegments = 7,
   transitionIntensity = 'standard',
-  transitionProfile = 'auto'
+  transitionProfile = 'auto',
+  deliveryMode = 'full_video'
 ) {
   const res = await api.post('/generate', {
     article_url: articleUrl,
@@ -51,6 +52,7 @@ export async function submitGenerate(
     max_segments: maxSegments,
     transition_intensity: transitionIntensity,
     transition_profile: transitionProfile,
+    delivery_mode: deliveryMode,
   })
   return res.data
 }
