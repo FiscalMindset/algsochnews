@@ -226,6 +226,34 @@ def _visual_score(segments: Sequence[dict]) -> tuple[int, str, List[str], str]:
     return 1, "Visual plan is too weak for a broadcast package.", evidence, recommendation
 
 
+def _factual_grounding_average(segments: Sequence[dict], article_text: str) -> float:
+    article_tokens = _norm_words(article_text)
+    if not article_tokens:
+        return 0.0
+    overlaps: List[float] = []
+    for seg in segments:
+        narration_tokens = _norm_words(seg.get("anchor_narration", ""))
+        if not narration_tokens:
+            overlaps.append(0.0)
+            continue
+        overlaps.append(len(narration_tokens & article_tokens) / max(len(narration_tokens), 1))
+    if not overlaps:
+        return 0.0
+    return round(sum(overlaps) / len(overlaps), 3)
+
+
+def _visual_coverage_ratio(segments: Sequence[dict]) -> float:
+    if not segments:
+        return 0.0
+    covered = 0
+    for seg in segments:
+        has_layout = bool(seg.get("layout"))
+        has_visual = bool(seg.get("source_image_url") or seg.get("ai_support_visual_prompt") or seg.get("scene_image_url"))
+        if has_layout and has_visual:
+            covered += 1
+    return round(covered / max(len(segments), 1), 3)
+
+
 def _extra_notes(segments: Sequence[dict], article_text: str) -> List[str]:
     notes = []
     total_duration = segments[-1].get("end_time", 0) if segments else 0
@@ -417,11 +445,35 @@ def review_broadcast_package(
     average = round(sum(item.score for item in criteria) / max(len(criteria), 1), 2)
     segment_diagnostics, weak_segments = _build_segment_diagnostics(segments, article_text)
     notes = _extra_notes(segments, article_text)
+
+    runtime_sec = float(segments[-1].get("end_time", 0.0)) if segments else 0.0
+    duration_ok = 60 <= runtime_sec <= 120
+    grounding_avg = _factual_grounding_average(segments, article_text)
+    grounding_ok = grounding_avg >= 0.26
+    visual_coverage = _visual_coverage_ratio(segments)
+    visual_coverage_ok = visual_coverage >= 0.85
+
+    hard_failures: List[str] = []
+    if not duration_ok:
+        hard_failures.append("duration_fit")
+        notes.append("Duration gate failed: runtime must stay within 60-120 seconds.")
+    if not grounding_ok:
+        hard_failures.append("factual_grounding")
+        notes.append("Grounding gate failed: narration overlap with source facts is too low.")
+    if not visual_coverage_ok:
+        hard_failures.append("visual_coverage")
+        notes.append("Visual gate failed: every segment should carry a clear layout + visual asset.")
+
+    # Deduplicate notes while preserving order.
+    seen_notes = set()
+    notes = [note for note in notes if not (note in seen_notes or seen_notes.add(note))]
+
     score_breakdown = {item.key: round(item.score / item.max_score, 3) for item in criteria}
     score_explanation = _build_score_explanation(criteria, average)
     next_actions = _build_next_actions(criteria, segment_diagnostics)
 
     main_failures = [item.key for item in criteria if item.score < 3]
+    main_failures.extend(hard_failures)
     quality_pressure = [item.key for item in criteria if item.score < 4]
 
     retry_decision = "finalize"
@@ -429,10 +481,31 @@ def review_broadcast_package(
         retry_decision = "retry_editor"
     if any(key in quality_pressure for key in ("visual_planning", "headline_quality")):
         retry_decision = "retry_packaging" if retry_decision == "finalize" else "retry_editor_and_packaging"
-    if average >= 4 and not main_failures and not notes:
+
+    if "duration_fit" in hard_failures or "factual_grounding" in hard_failures:
+        if retry_decision == "retry_packaging":
+            retry_decision = "retry_editor_and_packaging"
+        elif retry_decision == "finalize":
+            retry_decision = "retry_editor"
+    if "visual_coverage" in hard_failures:
+        if retry_decision == "retry_editor":
+            retry_decision = "retry_editor_and_packaging"
+        elif retry_decision == "finalize":
+            retry_decision = "retry_packaging"
+
+    if average >= 4 and not main_failures and not hard_failures:
         retry_decision = "finalize"
 
-    passed = average >= 4 and not main_failures
+    passed = average >= 4 and not main_failures and not hard_failures
+
+    gating = {
+        "duration_ok": duration_ok,
+        "runtime_sec": round(runtime_sec, 2),
+        "grounding_ok": grounding_ok,
+        "grounding_average": grounding_avg,
+        "visual_coverage_ok": visual_coverage_ok,
+        "visual_coverage_ratio": visual_coverage,
+    }
 
     review = QAReview(
         passed=passed,
@@ -440,6 +513,8 @@ def review_broadcast_package(
         retry_rounds=retry_rounds,
         retry_decision=retry_decision,
         weak_segments=weak_segments,
+        hard_failures=hard_failures,
+        gating=gating,
         notes=notes,
         criteria=criteria,
         score_breakdown=score_breakdown,

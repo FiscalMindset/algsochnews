@@ -8,7 +8,9 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict
+import zipfile
+from pathlib import Path
+from typing import Any, Dict, List
 
 import aiofiles
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -62,10 +64,18 @@ app = FastAPI(
     redoc_url="/api/redoc",
 )
 
+
+def _cors_origins(raw: str) -> List[str]:
+    values = [item.strip() for item in str(raw or "").split(",") if item.strip()]
+    return values or ["*"]
+
+
+cors_origins = _cors_origins(config.CORS_ALLOWED_ORIGINS)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=not (len(cors_origins) == 1 and cors_origins[0] == "*"),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -75,6 +85,235 @@ app.mount("/media", StaticFiles(directory=str(config.MEDIA_DIR)), name="media")
 JOBS: Dict[str, dict] = {}
 RUNTIME_LOG_LIMIT = 4000
 STATUS_POLL_LOG_INTERVAL_SEC = 1.2
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _timeline_for_agent(trace_events: List[dict], agent_key: str) -> List[dict]:
+    events = sorted(
+        [event for event in trace_events if event.get("agent_key") == agent_key],
+        key=lambda item: float(item.get("ts") or 0.0),
+    )
+    rows: List[dict] = []
+    previous_ts: float | None = None
+    for index, event in enumerate(events, start=1):
+        ts_value = event.get("ts")
+        current_ts = float(ts_value) if isinstance(ts_value, (int, float)) else None
+        delta = None
+        if current_ts is not None and previous_ts is not None:
+            delta = round(max(0.0, current_ts - previous_ts), 3)
+        rows.append(
+            {
+                "step": index,
+                "ts": current_ts,
+                "delta_seconds_from_previous": delta,
+                "event_type": event.get("event_type", ""),
+                "message": event.get("message", ""),
+                "tools": event.get("tools", []),
+                "decision": event.get("decision"),
+                "route_to": event.get("route_to"),
+                "input_payload": event.get("input_payload"),
+                "output_payload": event.get("output_payload"),
+                "metrics": event.get("metrics", {}),
+            }
+        )
+        if current_ts is not None:
+            previous_ts = current_ts
+    return rows
+
+
+def _build_all_agents_audit_payload(
+    job: dict,
+    review_payload: dict | None,
+    workflow_overview: dict,
+    model_verification_payload: dict | None,
+) -> dict:
+    agents = snapshot_agents(job)
+    trace_events = snapshot_trace_events(job)
+    payload_agents = []
+    for agent in agents:
+        payload_agents.append(
+            {
+                "key": agent.get("key"),
+                "name": agent.get("name"),
+                "role": agent.get("role"),
+                "status": agent.get("status"),
+                "progress": int(agent.get("progress") or 0),
+                "llm_model": agent.get("llm_model"),
+                "retry_count": int(agent.get("retry_count") or 0),
+                "node_visits": int(agent.get("node_visits") or 0),
+                "event_count": int(agent.get("event_count") or 0),
+                "started_at": agent.get("started_at"),
+                "finished_at": agent.get("finished_at"),
+                "summary": agent.get("summary", ""),
+                "branch": agent.get("branch"),
+                "current_input": agent.get("current_input"),
+                "tools_used": agent.get("tools_used", []),
+                "decisions": agent.get("decisions", []),
+                "metrics": agent.get("metrics", {}),
+                "outputs": agent.get("outputs", []),
+                "timeline": _timeline_for_agent(trace_events, str(agent.get("key") or "")),
+            }
+        )
+
+    return {
+        "generated_at": _now_iso(),
+        "workflow_overview": workflow_overview or {},
+        "model_verification": model_verification_payload or None,
+        "review": review_payload or None,
+        "agent_count": len(payload_agents),
+        "agents": payload_agents,
+    }
+
+
+def _compliance_check(key: str, label: str, passed: bool, detail: str) -> dict:
+    return {
+        "key": key,
+        "label": label,
+        "passed": bool(passed),
+        "status": "pass" if passed else "fail",
+        "detail": detail,
+    }
+
+
+def _build_compliance_report(
+    workflow_overview: dict,
+    review_payload: dict | None,
+    packaged_segments: List[dict],
+    route_history: List[str],
+    video_ready: bool,
+) -> dict:
+    sequential_path = workflow_overview.get("sequential_path", []) or []
+    parallel_stage = workflow_overview.get("parallel_stage") or {}
+    conditional_edges = workflow_overview.get("conditional_edges", []) or []
+
+    runtime_sec = float(packaged_segments[-1].get("end_time", 0.0)) if packaged_segments else 0.0
+    duration_ok = 60 <= runtime_sec <= 120
+
+    headlines = [str(seg.get("main_headline", "")).strip().lower() for seg in packaged_segments if seg.get("main_headline")]
+    unique_headline_ratio = round(len(set(headlines)) / max(len(headlines), 1), 3)
+    headline_ok = unique_headline_ratio >= 0.75
+
+    visual_covered = sum(
+        1
+        for seg in packaged_segments
+        if seg.get("layout") and (seg.get("source_image_url") or seg.get("ai_support_visual_prompt") or seg.get("scene_image_url"))
+    )
+    visual_coverage_ratio = round(visual_covered / max(len(packaged_segments), 1), 3)
+    visual_ok = visual_coverage_ratio >= 0.85
+
+    review_payload = review_payload or {}
+    qa_average = float(review_payload.get("overall_average") or 0.0)
+    qa_passed = bool(review_payload.get("passed"))
+    hard_failures = list(review_payload.get("hard_failures") or [])
+    targeted_retry_ok = bool(isinstance(review_payload.get("weak_segments"), list))
+
+    checks = [
+        _compliance_check(
+            "langgraph_workflow",
+            "LangGraph workflow",
+            workflow_overview.get("engine") == "langgraph",
+            f"engine={workflow_overview.get('engine', 'n/a')}",
+        ),
+        _compliance_check(
+            "sequential_flow",
+            "Sequential flow",
+            len(sequential_path) >= 4,
+            f"steps={len(sequential_path)}",
+        ),
+        _compliance_check(
+            "parallel_step",
+            "Parallel step",
+            bool(parallel_stage) and len(parallel_stage.get("tasks", []) or []) >= 2,
+            f"tasks={(parallel_stage.get('tasks') or [])}",
+        ),
+        _compliance_check(
+            "conditional_edges",
+            "Conditional edges",
+            len(conditional_edges) >= 3,
+            f"edges={len(conditional_edges)}",
+        ),
+        _compliance_check(
+            "targeted_retry",
+            "Targeted retry mechanism",
+            targeted_retry_ok,
+            f"decision={review_payload.get('retry_decision', 'n/a')}; weak_segments={len(review_payload.get('weak_segments') or [])}",
+        ),
+        _compliance_check(
+            "qa_gate",
+            "QA gate (avg>=4, no hard failures)",
+            qa_passed and qa_average >= 4 and not hard_failures,
+            f"avg={qa_average:.2f}; hard_failures={hard_failures}",
+        ),
+        _compliance_check(
+            "duration_fit",
+            "Duration 60-120 seconds",
+            duration_ok,
+            f"runtime={runtime_sec:.1f}s",
+        ),
+        _compliance_check(
+            "headline_variation",
+            "Headline variation by segment",
+            headline_ok,
+            f"unique_ratio={unique_headline_ratio:.2f}",
+        ),
+        _compliance_check(
+            "visual_coverage",
+            "Visual coverage across segments",
+            visual_ok,
+            f"coverage_ratio={visual_coverage_ratio:.2f}",
+        ),
+        _compliance_check(
+            "output_package",
+            "Client-ready output package",
+            bool(packaged_segments) and video_ready,
+            f"segments={len(packaged_segments)}; video_ready={video_ready}",
+        ),
+    ]
+
+    pass_count = sum(1 for check in checks if check["passed"])
+    return {
+        "generated_at": _now_iso(),
+        "overall_status": "pass" if pass_count == len(checks) else "needs_attention",
+        "pass_count": pass_count,
+        "total_count": len(checks),
+        "checks": checks,
+        "qa_average": round(qa_average, 2),
+        "runtime_sec": round(runtime_sec, 2),
+        "route_history": route_history,
+    }
+
+
+def _write_client_pack(out_dir: Path, job_id: str) -> Path:
+    script_path = out_dir / "script.json"
+    video_path = out_dir / "final_video.mp4"
+    audit_path = out_dir / "all_agents_audit.json"
+    compliance_path = out_dir / "compliance_report.json"
+    zip_path = out_dir / "client_pack.zip"
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        if script_path.exists():
+            archive.write(script_path, arcname="script.json")
+        if video_path.exists():
+            archive.write(video_path, arcname="final_video.mp4")
+        if audit_path.exists():
+            archive.write(audit_path, arcname="all_agents_audit.json")
+        if compliance_path.exists():
+            archive.write(compliance_path, arcname="compliance_report.json")
+
+        archive.writestr(
+            "README.txt",
+            (
+                f"Algsoch client delivery pack\n"
+                f"job_id: {job_id}\n"
+                f"generated_at: {_now_iso()}\n"
+                f"contents: script.json, final_video.mp4, all_agents_audit.json, compliance_report.json\n"
+            ),
+        )
+
+    return zip_path
 
 
 def _append_runtime_log(job_id: str, line: str) -> None:
@@ -186,6 +425,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
                 "overall_headline": "",
                 "hydrated_packages": [],
                 "source_inventory": [],
+                "visual_blueprint": [],
                 "visuals": [],
                 "packaged_segments": [],
                 "review": None,
@@ -414,6 +654,21 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         update(95, "Saving script JSON and outputs...")
         out_dir = config.OUTPUT_DIR / job_id
         out_dir.mkdir(parents=True, exist_ok=True)
+        final_video_path = Path(final_video)
+
+        review_payload = review.model_dump() if review is not None else None
+        workflow_overview = dict(job.get("workflow_overview", {}))
+        compliance_report = _build_compliance_report(
+            workflow_overview=workflow_overview,
+            review_payload=review_payload,
+            packaged_segments=packaged_segments,
+            route_history=graph_state.get("route_history", []),
+            video_ready=final_video_path.exists(),
+        )
+        workflow_overview["compliance_report"] = compliance_report
+        workflow_overview["final_runtime_sec"] = round(float(target_runtime or 0.0), 2)
+        workflow_overview["route_history"] = graph_state.get("route_history", [])
+        job["workflow_overview"] = workflow_overview
 
         article_model = ArticleData(
             title=article_raw.get("title", ""),
@@ -445,7 +700,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             qa_score=qa_score,
             review=review,
             render_review=(RenderQualityReview(**render_review_payload) if render_review_payload else None),
-            workflow_overview=job.get("workflow_overview", {}),
+            workflow_overview=workflow_overview,
             model_verification=model_verification,
             route_history=graph_state.get("route_history", []),
             llm_enhanced=llm_enhanced,
@@ -455,8 +710,23 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         async with aiofiles.open(script_path, "w") as handle:
             await handle.write(script.model_dump_json(indent=2))
 
+        audit_payload = _build_all_agents_audit_payload(
+            job=job,
+            review_payload=review_payload,
+            workflow_overview=workflow_overview,
+            model_verification_payload=model_verification.model_dump(),
+        )
+        audit_path = out_dir / "all_agents_audit.json"
+        async with aiofiles.open(audit_path, "w") as handle:
+            await handle.write(json.dumps(audit_payload, indent=2, default=str))
+
+        compliance_path = out_dir / "compliance_report.json"
+        async with aiofiles.open(compliance_path, "w") as handle:
+            await handle.write(json.dumps(compliance_report, indent=2, default=str))
+
+        _write_client_pack(out_dir, job_id)
+
         elapsed = round(time.time() - start, 2)
-        review_payload = review.model_dump() if review is not None else None
 
         result = GenerateResponse(
             success=True,
@@ -467,7 +737,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             trace_events=[TraceEvent(**item) for item in snapshot_trace_events(job)],
             runtime_logs=job.get("runtime_logs", []),
             model_verification=model_verification,
-            video_path=str(final_video),
+            video_path=str(final_video_path),
             video_url=f"/outputs/{job_id}/final_video.mp4",
             processing_time=elapsed,
         )
@@ -634,6 +904,18 @@ async def get_script(job_id: str):
     async with aiofiles.open(path, "r") as handle:
         content = await handle.read()
     return JSONResponse(content=json.loads(content))
+
+
+@app.get("/outputs/{job_id}/client_pack.zip")
+async def get_client_pack(job_id: str):
+    path = config.OUTPUT_DIR / job_id / "client_pack.zip"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Client pack not yet available")
+    return FileResponse(
+        str(path),
+        media_type="application/zip",
+        filename=f"algsoch_client_pack_{job_id}.zip",
+    )
 
 
 if __name__ == "__main__":

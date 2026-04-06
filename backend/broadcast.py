@@ -114,6 +114,10 @@ PREFERRED_HEADLINE_TOKENS = {
     "police", "cause", "probe", "operations", "damage", "smoke",
     "market", "response", "investigators",
 }
+GENERIC_HEADLINE_TOKENS = {
+    "story", "update", "report", "reports", "remain", "remains", "news", "latest",
+    "details", "issue", "incident", "event", "situation", "coverage",
+}
 LOW_SIGNAL_RE = re.compile(
     r"(this\s+article\s+is\s+about|for\s+the\s+.*\s+see)|"
     r"(listen\s+to|watch\s+the\s+full|full\s+discussion|podcast|"
@@ -254,6 +258,62 @@ def _headline_phrase(text: str, max_words: int = 6) -> str:
     if len(words) >= 2:
         return " ".join(words[:max_words])
     return _headline_case(_truncate_words(sentence, max_words).rstrip("."))
+
+
+def _headline_key(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _headline_is_weak(text: str) -> bool:
+    tokens = [token.lower() for token in re.findall(r"[a-zA-Z0-9']+", text)]
+    if len(tokens) < 3 or len(tokens) > 6:
+        return True
+    unique = len(set(tokens))
+    if unique < max(2, len(tokens) - 1):
+        return True
+    generic_count = sum(1 for token in tokens if token in GENERIC_HEADLINE_TOKENS or token in STOPWORDS)
+    if generic_count >= max(2, len(tokens) - 1):
+        return True
+    if all(token in GENERIC_HEADLINE_TOKENS for token in tokens):
+        return True
+    return False
+
+
+def _fallback_headline(text: str, segment_type: str) -> str:
+    tokens = []
+    for raw in re.findall(r"[A-Za-z0-9']+", _first_sentence(text)):
+        token = raw.lower()
+        if len(token) < 4 or token in STOPWORDS:
+            continue
+        tokens.append(raw.capitalize())
+    base = " ".join(tokens[:3])
+    if not base:
+        if segment_type == "intro":
+            return "Breaking Story Update"
+        if segment_type == "outro":
+            return "Latest Verified Update"
+        return "Developing Story Update"
+    return _headline_case(_truncate_words(base, 6).rstrip("."))
+
+
+def _ensure_unique_headline(headline: str, used: set[str], used_keys: set[str]) -> str:
+    normalized = _headline_key(headline)
+    if headline not in used and normalized not in used_keys:
+        used.add(headline)
+        used_keys.add(normalized)
+        return headline
+
+    base = " ".join(headline.split()[:5]) or "Story Update"
+    suffix = 2
+    while True:
+        candidate = f"{base} {suffix}"
+        candidate = _headline_case(_truncate_words(candidate, 6).rstrip("."))
+        key = _headline_key(candidate)
+        if candidate not in used and key not in used_keys:
+            used.add(candidate)
+            used_keys.add(key)
+            return candidate
+        suffix += 1
 
 
 def _rule_based_headline(text: str, article_title: str, segment_type: str) -> str | None:
@@ -424,6 +484,7 @@ def generate_segment_copy(
     keywords = extract_keywords(article_text)
     overall = generate_overall_headline(article_title, keywords)
     used = {overall}
+    used_keys = {_headline_key(overall)}
 
     resolved_intensity = _normalize_transition_intensity(transition_intensity)
     requested_profile = _normalize_transition_profile(transition_profile)
@@ -437,24 +498,59 @@ def generate_segment_copy(
         if _is_low_signal_sentence(segment_text_for_copy):
             segment_text_for_copy = sanitize_text(article_title or segment_text_for_copy)
 
+        candidate_pool: List[str] = []
         if index == 0 and article_title:
-            main_headline = _headline_case(_trim_trailing_stopwords(_truncate_words(article_title, 7).rstrip(".")))
-        else:
-            rule_headline = _rule_based_headline(segment_text_for_copy, article_title, seg["segment_type"])
-            if rule_headline:
-                main_headline = rule_headline
-            else:
-                seg_keywords = extract_keywords(segment_text_for_copy, top_n=10)
-                preferred_bigrams = [
-                    kw for kw in seg_keywords
-                    if " " in kw and any(token in kw.split() for token in PREFERRED_HEADLINE_TOKENS)
-                ]
-                keyword_headline = preferred_bigrams[0] if preferred_bigrams else build_headline(segment_text_for_copy, keywords, set(used))
-                phrase_headline = _headline_phrase(segment_text_for_copy, 5)
-                main_headline = phrase_headline if len(phrase_headline.split()) >= 3 else keyword_headline
-            main_headline = _headline_case(_truncate_words(main_headline.replace(" — Update", " Update"), 6).rstrip("."))
-        used.add(main_headline)
+            candidate_pool.append(_headline_case(_trim_trailing_stopwords(_truncate_words(article_title, 7).rstrip("."))))
+
+        rule_headline = _rule_based_headline(segment_text_for_copy, article_title, seg["segment_type"])
+        if rule_headline:
+            candidate_pool.append(rule_headline)
+
+        phrase_headline = _headline_phrase(segment_text_for_copy, 5)
+        if phrase_headline:
+            candidate_pool.append(phrase_headline)
+
+        seg_keywords = extract_keywords(segment_text_for_copy, top_n=10)
+        preferred_bigrams = [
+            kw for kw in seg_keywords
+            if " " in kw and any(token in kw.split() for token in PREFERRED_HEADLINE_TOKENS)
+        ]
+        keyword_headline = preferred_bigrams[0] if preferred_bigrams else build_headline(segment_text_for_copy, keywords, set(used))
+        if keyword_headline:
+            candidate_pool.append(keyword_headline)
+
+        candidate_pool.append(_fallback_headline(segment_text_for_copy, seg["segment_type"]))
+
+        selected_headline = ""
+        for candidate in candidate_pool:
+            normalized_candidate = _headline_case(_truncate_words(candidate.replace(" — Update", " Update"), 6).rstrip("."))
+            if not normalized_candidate:
+                continue
+            key = _headline_key(normalized_candidate)
+            if key in used_keys:
+                continue
+            if _headline_is_weak(normalized_candidate):
+                continue
+            selected_headline = normalized_candidate
+            break
+
+        if not selected_headline:
+            for candidate in candidate_pool:
+                normalized_candidate = _headline_case(_truncate_words(candidate.replace(" — Update", " Update"), 6).rstrip("."))
+                if not normalized_candidate:
+                    continue
+                key = _headline_key(normalized_candidate)
+                if key not in used_keys:
+                    selected_headline = normalized_candidate
+                    break
+
+        if not selected_headline:
+            selected_headline = _fallback_headline(segment_text_for_copy, seg["segment_type"])
+
+        main_headline = _ensure_unique_headline(selected_headline, used, used_keys)
         subheadline = _make_subheadline(segment_text_for_copy, main_headline)
+        if len(subheadline.split()) < 5:
+            subheadline = _headline_case(_truncate_words(_first_sentence(segment_text_for_copy), 10).rstrip("."))
 
         if seg["segment_type"] == "intro":
             top_tag = "BREAKING"

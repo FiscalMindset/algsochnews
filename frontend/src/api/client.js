@@ -1,8 +1,30 @@
 // api/client.js — Axios wrapper for backend API
 import axios from 'axios'
 
+const RAW_API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim()
+const API_BASE_URL = RAW_API_BASE_URL.replace(/\/+$/, '')
+
+function isAbsoluteUrl(value) {
+  return /^https?:\/\//i.test(value) || /^blob:/i.test(value) || /^data:/i.test(value)
+}
+
+function normalizePath(path) {
+  const value = String(path || '')
+  return value.startsWith('/') ? value : `/${value}`
+}
+
+export function resolveAssetUrl(path) {
+  if (!path) return ''
+
+  const value = String(path)
+  if (isAbsoluteUrl(value)) return value
+
+  const normalizedPath = normalizePath(value)
+  return API_BASE_URL ? `${API_BASE_URL}${normalizedPath}` : normalizedPath
+}
+
 const api = axios.create({
-  baseURL: '/',
+  baseURL: API_BASE_URL || '/',
   timeout: 15000,
 })
 
@@ -45,5 +67,9 @@ export async function fetchScript(jobId) {
 }
 
 export function videoUrl(jobId) {
-  return `/outputs/${jobId}/final_video.mp4`
+  return resolveAssetUrl(`/outputs/${jobId}/final_video.mp4`)
+}
+
+export function clientPackUrl(jobId) {
+  return resolveAssetUrl(`/outputs/${jobId}/client_pack.zip`)
 }

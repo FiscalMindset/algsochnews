@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: algsoch-news-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-pro
+      - key: USE_GEMINI
+        value: "true"
+      - key: TTS_ENGINE
+        value: gtts
+      - key: RENDER_HTML_FRAMES
+        value: "false"
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
+  - type: web
+    name: algsoch-news-frontend
+    runtime: node
+    rootDir: frontend
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run preview -- --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false

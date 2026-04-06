@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, CheckCircle, Clock, FileText, Loader, RefreshCw } from 'lucide-react'
+import { AlertTriangle, CheckCircle, Clock, Download, FileText, Loader, RefreshCw } from 'lucide-react'
 import { buildExecutionConsoleLines, formatClock, retrySummary } from './consoleUtils'
 
 function StatusIcon({ status }) {
@@ -31,6 +31,251 @@ function formatEventType(value) {
   return String(value).replace(/_/g, ' ')
 }
 
+function compactJson(value, maxLen = 420) {
+  if (value == null) return ''
+  if (Array.isArray(value) && value.length === 0) return ''
+  if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return ''
+  let text = ''
+  try {
+    text = typeof value === 'string' ? value : JSON.stringify(value)
+  } catch {
+    text = String(value)
+  }
+  if (!text) return ''
+  if (text.length <= maxLen) return text
+  return `${text.slice(0, maxLen)}...`
+}
+
+function formatStepDelta(currentTs, previousTs) {
+  if (currentTs == null || previousTs == null) return 'n/a'
+  const current = Number(currentTs)
+  const previous = Number(previousTs)
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) return 'n/a'
+  return `${Math.max(0, current - previous).toFixed(1)}s`
+}
+
+function formatStepDeltaSeconds(currentTs, previousTs) {
+  if (currentTs == null || previousTs == null) return null
+  const current = Number(currentTs)
+  const previous = Number(previousTs)
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) return null
+  return Number(Math.max(0, current - previous).toFixed(3))
+}
+
+function sanitizeFilePart(value) {
+  return String(value || 'agent')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+}
+
+function timestampSlug() {
+  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+}
+
+function sortedEventsForAgent(traceEvents, agentKey) {
+  return (traceEvents || [])
+    .filter((event) => event.agent_key === agentKey)
+    .sort((left, right) => Number(left.ts || 0) - Number(right.ts || 0))
+}
+
+function buildTimelineRows(agentEvents) {
+  return (agentEvents || []).map((event, idx) => {
+    const previousTs = idx > 0 ? agentEvents[idx - 1].ts : null
+    return {
+      step: idx + 1,
+      ts: event.ts || null,
+      time: formatClock(event.ts),
+      delta_seconds_from_previous: formatStepDeltaSeconds(event.ts, previousTs),
+      event_type: event.event_type || '',
+      message: event.message || '',
+      tools: event.tools || [],
+      decision: event.decision || null,
+      route_to: event.route_to || null,
+      input_payload: event.input_payload ?? null,
+      output_payload: event.output_payload ?? null,
+      metrics: event.metrics || {},
+    }
+  })
+}
+
+function buildAgentAudit(agent, agentEvents) {
+  return {
+    key: agent.key,
+    name: agent.name,
+    role: agent.role,
+    status: agent.status,
+    progress: Number(agent.progress || 0),
+    llm_model: agent.llm_model || null,
+    retry_count: Number(agent.retry_count || 0),
+    node_visits: Number(agent.node_visits || 0),
+    event_count: Number(agent.event_count || 0),
+    started_at: agent.started_at || null,
+    finished_at: agent.finished_at || null,
+    summary: agent.summary || '',
+    branch: agent.branch || null,
+    current_input: agent.current_input ?? null,
+    tools_used: agent.tools_used || [],
+    decisions: agent.decisions || [],
+    metrics: agent.metrics || {},
+    outputs: agent.outputs || [],
+    timeline: buildTimelineRows(agentEvents),
+  }
+}
+
+function downloadAgentAudit(agent, agentEvents) {
+  const audit = {
+    generated_at: new Date().toISOString(),
+    agent: buildAgentAudit(agent, agentEvents),
+  }
+
+  const blob = new Blob([JSON.stringify(audit, null, 2)], { type: 'application/json' })
+  const href = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = href
+  link.download = `agent-audit-${sanitizeFilePart(agent.key)}-${timestampSlug()}.json`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(href)
+}
+
+function downloadAllAgentsAudit(agents, traceEvents, workflowOverview, modelVerification, review) {
+  const payload = {
+    generated_at: new Date().toISOString(),
+    workflow_overview: workflowOverview || {},
+    model_verification: modelVerification || null,
+    review: review || null,
+    agent_count: (agents || []).length,
+    agents: (agents || []).map((agent) => {
+      const events = sortedEventsForAgent(traceEvents, agent.key)
+      return buildAgentAudit(agent, events)
+    }),
+  }
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const href = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = href
+  link.download = `all-agents-audit-${timestampSlug()}.json`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(href)
+}
+
+function complianceCheck(key, label, passed, detail, status = '') {
+  const resolvedStatus = status || (passed ? 'pass' : 'fail')
+  return {
+    key,
+    label,
+    passed: Boolean(passed),
+    status: resolvedStatus,
+    detail,
+  }
+}
+
+function deriveComplianceReport(workflowOverview, review, agents) {
+  const backendReport = workflowOverview?.compliance_report
+  if (backendReport?.checks?.length) return backendReport
+
+  const sequentialPath = workflowOverview?.sequential_path || []
+  const parallelTasks = workflowOverview?.parallel_stage?.tasks || []
+  const conditionalEdges = workflowOverview?.conditional_edges || []
+  const hardFailures = review?.hard_failures || []
+  const qaAverage = Number(review?.overall_average || 0)
+
+  const checks = [
+    complianceCheck(
+      'langgraph_workflow',
+      'LangGraph workflow',
+      workflowOverview?.engine === 'langgraph',
+      `engine=${workflowOverview?.engine || 'n/a'}`,
+    ),
+    complianceCheck(
+      'sequential_flow',
+      'Sequential flow',
+      sequentialPath.length >= 4,
+      `steps=${sequentialPath.length}`,
+    ),
+    complianceCheck(
+      'parallel_step',
+      'Parallel stage',
+      parallelTasks.length >= 2,
+      `tasks=${parallelTasks.length}`,
+    ),
+    complianceCheck(
+      'conditional_edges',
+      'Conditional routing',
+      conditionalEdges.length >= 3,
+      `edges=${conditionalEdges.length}`,
+    ),
+    complianceCheck(
+      'qa_gate',
+      'QA gate (avg>=4)',
+      review ? review.passed && qaAverage >= 4 && hardFailures.length === 0 : false,
+      review
+        ? `avg=${qaAverage.toFixed(2)}; hard_failures=${hardFailures.length}`
+        : 'Waiting for QA review',
+      review ? '' : 'pending',
+    ),
+    complianceCheck(
+      'targeted_retry',
+      'Targeted retry readiness',
+      Array.isArray(review?.weak_segments) || (agents || []).length > 0,
+      review
+        ? `weak_segments=${review?.weak_segments?.length || 0}`
+        : 'Tracking weak segments once QA runs',
+      review ? '' : 'pending',
+    ),
+  ]
+
+  const passCount = checks.filter((check) => check.passed).length
+  return {
+    generated_at: new Date().toISOString(),
+    overall_status: passCount === checks.length ? 'pass' : 'needs_attention',
+    pass_count: passCount,
+    total_count: checks.length,
+    checks,
+  }
+}
+
+function CompliancePanel({ workflowOverview, review, agents = [] }) {
+  const report = useMemo(
+    () => deriveComplianceReport(workflowOverview, review, agents),
+    [workflowOverview, review, agents],
+  )
+  if (!report?.checks?.length) return null
+
+  const statusClass = report.overall_status === 'pass' ? 'pass' : 'needs_attention'
+
+  return (
+    <section className="workflow-map compliance-panel">
+      <div className="workflow-map-title">Client compliance</div>
+      <div className="compliance-topline">
+        <span className={`compliance-status compliance-status--${statusClass}`}>
+          {statusClass === 'pass' ? 'All checks passing' : 'Needs attention'}
+        </span>
+        <span className="compliance-score">{report.pass_count}/{report.total_count} checks</span>
+      </div>
+      <div className="compliance-grid">
+        {report.checks.map((check) => (
+          <article key={check.key} className="compliance-card">
+            <div className="compliance-card-top">
+              <strong>{check.label}</strong>
+              <span className={`compliance-pill compliance-pill--${check.status}`}>
+                {check.status === 'pending' ? 'pending' : check.status === 'pass' ? 'pass' : 'fail'}
+              </span>
+            </div>
+            <p>{check.detail}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function AgentCard({ agent, index, traceEvents = [] }) {
   const [showDetails, setShowDetails] = useState(agent.status !== 'pending')
 
@@ -41,14 +286,21 @@ function AgentCard({ agent, index, traceEvents = [] }) {
   }, [agent.status, agent.event_count, showDetails])
 
   const agentEvents = useMemo(
-    () => (
-      (traceEvents || [])
-        .filter((event) => event.agent_key === agent.key)
-        .sort((left, right) => Number(left.ts || 0) - Number(right.ts || 0))
-    ),
+    () => sortedEventsForAgent(traceEvents, agent.key),
     [traceEvents, agent.key],
   )
   const duration = formatDuration(agent.started_at, agent.finished_at)
+  const routeCount = agentEvents.filter((event) => Boolean(event.route_to)).length
+  const latestDecision = [...agentEvents].reverse().find((event) => event.decision)?.decision || 'none'
+  const latestRoute = [...agentEvents].reverse().find((event) => event.route_to)?.route_to || 'none'
+  const auditStats = [
+    { label: 'events', value: agent.event_count || 0 },
+    { label: 'node visits', value: agent.node_visits || 0 },
+    { label: 'tools', value: agent.tools_used?.length || 0 },
+    { label: 'outputs', value: agent.outputs?.length || 0 },
+    { label: 'decisions', value: agent.decisions?.length || 0 },
+    { label: 'routes', value: routeCount },
+  ]
 
   return (
     <article className={`agent-card agent-card--${agent.status}`}>
@@ -71,10 +323,21 @@ function AgentCard({ agent, index, traceEvents = [] }) {
 
       <p className="agent-summary">{agent.summary || 'Waiting for work allocation.'}</p>
 
+      <div className="agent-audit-grid">
+        {auditStats.map((stat) => (
+          <div key={`${agent.key}-${stat.label}`} className="agent-audit-item">
+            <span>{stat.label}</span>
+            <strong>{stat.value}</strong>
+          </div>
+        ))}
+      </div>
+
       <div className="agent-lifecycle-summary">
         <span>start: {formatClock(agent.started_at)}</span>
         <span>end: {formatClock(agent.finished_at)}</span>
         <span>duration: {duration}</span>
+        <span>last decision: {latestDecision}</span>
+        <span>last route: {latestRoute}</span>
       </div>
 
       <div className="agent-card-actions">
@@ -88,6 +351,13 @@ function AgentCard({ agent, index, traceEvents = [] }) {
             : showDetails
               ? 'Hide how this worked'
               : 'How this worked'}
+        </button>
+        <button
+          type="button"
+          className="agent-download-btn"
+          onClick={() => downloadAgentAudit(agent, agentEvents)}
+        >
+          <Download size={12} /> Download audit JSON
         </button>
         <span className="metric-chip">events: {agent.event_count || 0}</span>
       </div>
@@ -129,16 +399,26 @@ function AgentCard({ agent, index, traceEvents = [] }) {
             <div className="agent-output">
               <div className="agent-output-label">Lifecycle timeline</div>
               <div className="agent-trace-list">
-                {agentEvents.map((event, idx) => (
-                  <div key={`${agent.key}-trace-${event.ts}-${idx}`} className="agent-trace-item">
-                    <strong>Step {idx + 1}: {formatEventType(event.event_type)}</strong>
-                    <span>{event.message}</span>
-                    <em>time: {formatClock(event.ts)}</em>
-                    {event.tools?.length > 0 && <em>tools: {event.tools.join(', ')}</em>}
-                    {event.decision && <em>decision: {event.decision}</em>}
-                    {event.route_to && <em>route: {event.route_to}</em>}
-                  </div>
-                ))}
+                {agentEvents.map((event, idx) => {
+                  const previousTs = idx > 0 ? agentEvents[idx - 1].ts : null
+                  const inputPreview = compactJson(event.input_payload, 360)
+                  const outputPreview = compactJson(event.output_payload, 360)
+                  const metricsPreview = compactJson(event.metrics, 240)
+
+                  return (
+                    <div key={`${agent.key}-trace-${event.ts}-${idx}`} className="agent-trace-item">
+                      <strong>Step {idx + 1}: {formatEventType(event.event_type)}</strong>
+                      <span>{event.message}</span>
+                      <em>time: {formatClock(event.ts)} | delta: {formatStepDelta(event.ts, previousTs)}</em>
+                      {event.tools?.length > 0 && <em>tools: {event.tools.join(', ')}</em>}
+                      {event.decision && <em>decision: {event.decision}</em>}
+                      {event.route_to && <em>route: {event.route_to}</em>}
+                      {inputPreview && <pre className="agent-trace-payload">input: {inputPreview}</pre>}
+                      {outputPreview && <pre className="agent-trace-payload">output: {outputPreview}</pre>}
+                      {metricsPreview && <pre className="agent-trace-payload">metrics: {metricsPreview}</pre>}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -179,6 +459,8 @@ function ExecutionConsole({ activityLog = [], traceEvents = [], runtimeLogs = []
 }
 
 function ExtractionPanel({ agents = [] }) {
+  const [showFullPreview, setShowFullPreview] = useState(false)
+  const [showAllAttempts, setShowAllAttempts] = useState(false)
   const extractionAgent = agents.find((agent) => agent.key === 'extraction')
   if (!extractionAgent) return null
 
@@ -186,6 +468,13 @@ function ExtractionPanel({ agents = [] }) {
   const candidates = outputs.find((item) => item.label === 'Candidates')?.value || []
   const extractedPreview = outputs.find((item) => item.label === 'Extracted preview')?.value
   const attempts = outputs.find((item) => item.label === 'Extractor attempts')?.value || []
+  const selectedCandidate = candidates.find((candidate) => candidate.status === 'accepted') || candidates[0] || null
+  const previewText = String(extractedPreview || '')
+  const previewLimit = 560
+  const previewBody = showFullPreview || previewText.length <= previewLimit
+    ? previewText
+    : `${previewText.slice(0, previewLimit)}...`
+  const visibleAttempts = showAllAttempts ? attempts : attempts.slice(0, 3)
 
   return (
     <section className="review-panel">
@@ -196,9 +485,24 @@ function ExtractionPanel({ agents = [] }) {
         </div>
       </div>
 
+      {selectedCandidate && (
+        <div className="review-note review-note--neutral">
+          <strong>Selected candidate:</strong> {selectedCandidate.method} | score {selectedCandidate.score || 0} |
+          {' '}words {selectedCandidate.word_count || 0} | attempts {attempts.length || candidates.length}
+        </div>
+      )}
+
       {extractedPreview && (
-        <div className="review-note">
-          <strong>Selected extraction preview:</strong> {String(extractedPreview).slice(0, 420)}
+        <div className="review-note review-note--preview">
+          <strong>Selected extraction preview:</strong>
+          <div className="review-preview-shell">
+            <p className="review-preview-text">{previewBody}</p>
+          </div>
+          {previewText.length > previewLimit && (
+            <button type="button" className="review-toggle-btn" onClick={() => setShowFullPreview((value) => !value)}>
+              {showFullPreview ? 'Show shorter preview' : 'Show full preview'}
+            </button>
+          )}
         </div>
       )}
 
@@ -241,13 +545,18 @@ function ExtractionPanel({ agents = [] }) {
 
       {!!attempts.length && (
         <div className="review-notes">
-          {attempts.map((attempt, idx) => (
+          {visibleAttempts.map((attempt, idx) => (
             <div key={`${attempt.method}-${idx}`} className="review-note">
               <strong>{attempt.method}</strong>: {attempt.status} · {attempt.reason}
               {attempt.selector_used && <div className="review-note-meta">selector: {attempt.selector_used}</div>}
               {attempt.dom_tags?.length > 0 && <div className="review-note-meta">tags: {attempt.dom_tags.join(', ')}</div>}
             </div>
           ))}
+          {attempts.length > 3 && (
+            <button type="button" className="review-toggle-btn" onClick={() => setShowAllAttempts((value) => !value)}>
+              {showAllAttempts ? 'Show fewer attempts' : `Show all attempts (${attempts.length})`}
+            </button>
+          )}
         </div>
       )}
     </section>
@@ -256,6 +565,14 @@ function ExtractionPanel({ agents = [] }) {
 
 function ReviewPanel({ review }) {
   if (!review) return null
+  const breakdownEntries = Object.entries(review.score_breakdown || {})
+  const strongest = breakdownEntries.length
+    ? [...breakdownEntries].sort((left, right) => Number(right[1] || 0) - Number(left[1] || 0))[0]
+    : null
+  const weakest = breakdownEntries.length
+    ? [...breakdownEntries].sort((left, right) => Number(left[1] || 0) - Number(right[1] || 0))[0]
+    : null
+
   return (
     <section className="review-panel">
       <div className="review-header">
@@ -268,8 +585,16 @@ function ReviewPanel({ review }) {
         </div>
       </div>
 
+      <div className="review-facts">
+        <div className="review-fact"><span>criteria</span><strong>{review.criteria?.length || 0}</strong></div>
+        <div className="review-fact"><span>segments checked</span><strong>{review.segment_diagnostics?.length || 0}</strong></div>
+        <div className="review-fact"><span>weak segments</span><strong>{review.weak_segments?.length || 0}</strong></div>
+        {strongest && <div className="review-fact"><span>strongest</span><strong>{strongest[0].replace(/_/g, ' ')}</strong></div>}
+        {weakest && <div className="review-fact"><span>needs work</span><strong>{weakest[0].replace(/_/g, ' ')}</strong></div>}
+      </div>
+
       {review.score_explanation && (
-        <div className="review-note">{review.score_explanation}</div>
+        <div className="review-note review-note--qa-summary">{review.score_explanation}</div>
       )}
 
       <div className="review-grid">
@@ -385,8 +710,23 @@ export default function AgentWorkflowPanel({
           <p className="workflow-kicker">Visible orchestration</p>
           <h2>Agent Workflow</h2>
         </div>
-        <p className="workflow-sub">Extraction, editorial, packaging, QA, and video generation are surfaced so the client can inspect the work, not just the final answer.</p>
+        <div className="workflow-header-right">
+          <p className="workflow-sub">Extraction, editorial, packaging, QA, and video generation are surfaced so the client can inspect the work, not just the final answer.</p>
+        </div>
       </div>
+
+      {!!agents.length && (
+        <div className="workflow-actions-row">
+          <button
+            type="button"
+            className="workflow-download-btn"
+            onClick={() => downloadAllAgentsAudit(agents, traceEvents, workflowOverview, modelVerification, review)}
+          >
+            <Download size={13} /> Download all agents audit (live)
+          </button>
+          <span className="workflow-actions-hint">Available during processing. Exports current progress instantly.</span>
+        </div>
+      )}
 
       {modelVerification?.selected_model && (
         <section className="workflow-map">
@@ -405,6 +745,7 @@ export default function AgentWorkflowPanel({
       )}
 
       <WorkflowMap workflowOverview={workflowOverview} />
+      <CompliancePanel workflowOverview={workflowOverview} review={review} agents={agents} />
 
       {(reviewDecision || retryCount > 0) && (
         <section className="workflow-map">
@@ -465,6 +806,31 @@ export default function AgentWorkflowPanel({
           gap: 16px;
           flex-wrap: wrap;
         }
+        .workflow-header-right {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 6px;
+          max-width: 560px;
+          min-width: 0;
+        }
+        .workflow-actions-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+          border-radius: 14px;
+          border: 1px solid rgba(59,130,246,0.2);
+          background: linear-gradient(180deg, rgba(59,130,246,0.1), rgba(59,130,246,0.05));
+          padding: 10px 12px;
+        }
+        .workflow-actions-hint {
+          font-size: 11px;
+          line-height: 1.5;
+          color: rgba(219,234,254,0.84);
+          overflow-wrap: anywhere;
+        }
         .workflow-kicker {
           font-size: 11px;
           letter-spacing: 0.14em;
@@ -477,10 +843,31 @@ export default function AgentWorkflowPanel({
           line-height: 1.1;
         }
         .workflow-sub {
-          max-width: 540px;
+          max-width: 560px;
           color: rgba(255,255,255,0.55);
           font-size: 13px;
           line-height: 1.7;
+          text-align: right;
+          overflow-wrap: anywhere;
+        }
+        .workflow-download-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          border-radius: 999px;
+          border: 1px solid rgba(59,130,246,0.36);
+          background: rgba(59,130,246,0.14);
+          color: #dbeafe;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+          padding: 8px 12px;
+          cursor: pointer;
+          transition: all var(--transition-fast);
+        }
+        .workflow-download-btn:hover {
+          border-color: rgba(59,130,246,0.56);
+          background: rgba(59,130,246,0.22);
         }
         .agent-grid {
           display: grid;
@@ -535,6 +922,94 @@ export default function AgentWorkflowPanel({
           border: 1px solid rgba(59,130,246,0.2);
           border-radius: 999px;
           padding: 5px 8px;
+        }
+        .compliance-panel {
+          gap: 12px;
+        }
+        .compliance-topline {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          flex-wrap: wrap;
+          gap: 10px;
+        }
+        .compliance-status {
+          display: inline-flex;
+          align-items: center;
+          border-radius: 999px;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+          padding: 6px 10px;
+        }
+        .compliance-status--pass {
+          color: #bbf7d0;
+          border: 1px solid rgba(16,185,129,0.34);
+          background: rgba(16,185,129,0.12);
+        }
+        .compliance-status--needs_attention {
+          color: #fde68a;
+          border: 1px solid rgba(245,158,11,0.34);
+          background: rgba(245,158,11,0.12);
+        }
+        .compliance-score {
+          font-size: 12px;
+          color: rgba(255,255,255,0.68);
+        }
+        .compliance-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          gap: 10px;
+        }
+        .compliance-card {
+          border-radius: 14px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.04);
+          padding: 10px 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          min-width: 0;
+        }
+        .compliance-card-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+        .compliance-card-top strong {
+          font-size: 12px;
+          color: rgba(255,255,255,0.9);
+        }
+        .compliance-pill {
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          border-radius: 999px;
+          padding: 4px 8px;
+          font-weight: 700;
+        }
+        .compliance-pill--pass {
+          color: #86efac;
+          border: 1px solid rgba(16,185,129,0.35);
+          background: rgba(16,185,129,0.12);
+        }
+        .compliance-pill--fail {
+          color: #fca5a5;
+          border: 1px solid rgba(239,68,68,0.38);
+          background: rgba(239,68,68,0.12);
+        }
+        .compliance-pill--pending {
+          color: #bfdbfe;
+          border: 1px solid rgba(59,130,246,0.36);
+          background: rgba(59,130,246,0.12);
+        }
+        .compliance-card p {
+          margin: 0;
+          font-size: 11px;
+          line-height: 1.6;
+          color: rgba(255,255,255,0.66);
+          overflow-wrap: anywhere;
         }
         .terminal-console {
           border-radius: 20px;
@@ -732,6 +1207,30 @@ export default function AgentWorkflowPanel({
           outline: 2px solid rgba(59,130,246,0.6);
           outline-offset: 2px;
         }
+        .agent-download-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          border-radius: 999px;
+          border: 1px solid rgba(16,185,129,0.36);
+          background: rgba(16,185,129,0.12);
+          color: #bbf7d0;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+          padding: 7px 10px;
+          cursor: pointer;
+          transition: all var(--transition-fast);
+        }
+        .agent-download-btn:hover {
+          border-color: rgba(16,185,129,0.56);
+          background: rgba(16,185,129,0.18);
+          color: #dcfce7;
+        }
+        .agent-download-btn:focus-visible {
+          outline: 2px solid rgba(16,185,129,0.5);
+          outline-offset: 2px;
+        }
         .agent-detail-stack {
           display: flex;
           flex-direction: column;
@@ -838,7 +1337,8 @@ export default function AgentWorkflowPanel({
         .workflow-bottom {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-          gap: 16px;
+          gap: 20px;
+          align-items: start;
         }
         .activity-panel,
         .review-panel {
@@ -846,6 +1346,8 @@ export default function AgentWorkflowPanel({
           border: 1px solid rgba(255,255,255,0.08);
           border-radius: 20px;
           padding: 18px;
+          min-width: 0;
+          overflow: hidden;
         }
         .activity-title,
         .review-title {
@@ -877,7 +1379,34 @@ export default function AgentWorkflowPanel({
           justify-content: space-between;
           gap: 10px;
           align-items: center;
+          flex-wrap: wrap;
           margin-bottom: 14px;
+        }
+        .review-facts {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+          gap: 8px;
+          margin-bottom: 12px;
+        }
+        .review-fact {
+          display: grid;
+          gap: 4px;
+          border-radius: 10px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.04);
+          padding: 8px 10px;
+          min-width: 0;
+        }
+        .review-fact span {
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: rgba(255,255,255,0.5);
+        }
+        .review-fact strong {
+          font-size: 12px;
+          color: rgba(255,255,255,0.86);
+          overflow-wrap: anywhere;
         }
         .review-badge {
           font-size: 12px;
@@ -897,14 +1426,16 @@ export default function AgentWorkflowPanel({
         }
         .review-grid {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
           gap: 10px;
+          margin-top: 8px;
         }
         .review-item {
           border-radius: 14px;
           padding: 12px;
           background: rgba(255,255,255,0.04);
           border: 1px solid rgba(255,255,255,0.05);
+          min-width: 0;
         }
         .review-item-top {
           display: flex;
@@ -917,6 +1448,7 @@ export default function AgentWorkflowPanel({
           font-size: 12px;
           line-height: 1.6;
           color: rgba(255,255,255,0.62);
+          overflow-wrap: anywhere;
         }
         .review-mini-list {
           display: flex;
@@ -945,13 +1477,127 @@ export default function AgentWorkflowPanel({
           border-radius: 12px;
           background: rgba(245,158,11,0.07);
           border: 1px solid rgba(245,158,11,0.18);
+          margin: 0;
+          overflow-wrap: anywhere;
+          white-space: normal;
+        }
+        .review-note--neutral {
+          background: rgba(59,130,246,0.08);
+          border-color: rgba(59,130,246,0.25);
+          color: rgba(219,234,254,0.9);
+          margin-bottom: 12px;
+        }
+        .review-note--preview {
+          background: rgba(16,185,129,0.08);
+          border-color: rgba(16,185,129,0.2);
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          margin-bottom: 14px;
+        }
+        .review-note--qa-summary {
+          background: rgba(245,158,11,0.1);
+          border-color: rgba(245,158,11,0.24);
+        }
+        .review-preview-shell {
+          border-radius: 10px;
+          border: 1px solid rgba(16,185,129,0.24);
+          background: rgba(15,23,42,0.52);
+          padding: 10px 12px;
+          max-height: 240px;
+          overflow: auto;
+          min-width: 0;
+        }
+        .review-preview-text {
+          margin: 0;
+          color: rgba(255,255,255,0.8);
+          line-height: 1.7;
+          overflow-wrap: anywhere;
+          white-space: pre-wrap;
+        }
+        .review-toggle-btn {
+          margin-top: 8px;
+          border: 1px solid rgba(255,255,255,0.16);
+          border-radius: 999px;
+          background: rgba(255,255,255,0.05);
+          color: rgba(255,255,255,0.85);
+          padding: 6px 10px;
+          font-size: 11px;
+          font-weight: 700;
+          cursor: pointer;
+          width: fit-content;
         }
         .review-note-meta {
           margin-top: 6px;
           color: rgba(255,255,255,0.58);
           font-size: 11px;
+          overflow-wrap: anywhere;
+        }
+        .agent-audit-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+          gap: 8px;
+        }
+        .agent-audit-item {
+          border-radius: 10px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.04);
+          padding: 7px 9px;
+          display: grid;
+          gap: 4px;
+          min-width: 0;
+        }
+        .agent-audit-item span {
+          font-size: 10px;
+          color: rgba(255,255,255,0.48);
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+        }
+        .agent-audit-item strong {
+          font-size: 12px;
+          color: rgba(255,255,255,0.88);
+          overflow-wrap: anywhere;
+        }
+        .agent-trace-payload {
+          margin: 0;
+          white-space: pre-wrap;
+          word-break: break-word;
+          overflow-wrap: anywhere;
+          border-radius: 8px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.04);
+          padding: 7px 8px;
+          font-size: 11px;
+          line-height: 1.6;
+          color: rgba(255,255,255,0.74);
+          font-family: var(--font-mono);
         }
         .agent-spin { animation: spin 1s linear infinite; }
+        @media (max-width: 1180px) {
+          .workflow-bottom {
+            grid-template-columns: 1fr;
+          }
+        }
+        @media (max-width: 900px) {
+          .workflow-header-right {
+            align-items: flex-start;
+            max-width: 100%;
+          }
+          .workflow-sub {
+            text-align: left;
+          }
+          .workflow-actions-row {
+            align-items: flex-start;
+          }
+        }
+        @media (max-width: 760px) {
+          .review-grid {
+            grid-template-columns: 1fr;
+          }
+          .review-facts {
+            grid-template-columns: 1fr 1fr;
+          }
+        }
         @media (max-width: 900px) {
           .agent-grid {
             grid-template-columns: 1fr;

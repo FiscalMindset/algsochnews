@@ -1,6 +1,7 @@
 // components/DownloadButton.jsx
 import { Download, CheckCircle } from 'lucide-react'
 import { useState } from 'react'
+import { resolveAssetUrl } from '../api/client.js'
 
 export default function DownloadButton({ videoUrl, jobId }) {
   const [downloading, setDownloading] = useState(false)
@@ -9,7 +10,7 @@ export default function DownloadButton({ videoUrl, jobId }) {
   async function handleDownload() {
     setDownloading(true)
     try {
-      const res = await fetch(videoUrl)
+      const res = await fetch(resolveAssetUrl(videoUrl))
       const blob = await res.blob()
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')

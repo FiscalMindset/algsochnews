@@ -33,7 +33,7 @@ from backend.qa import review_broadcast_package
 from backend.scraper import scrape_article
 from backend.segmenter import segment_article
 from backend.utils import config, estimate_duration, get_logger, sanitize_text
-from backend.visual_planner import plan_visuals, prepare_source_images
+from backend.visual_planner import plan_visual_blueprint, plan_visuals, prepare_source_images
 from backend.workflow import (
     append_agent_output,
     record_agent_decision,
@@ -64,6 +64,7 @@ class GraphState(TypedDict):
     overall_headline: str
     hydrated_packages: List[dict]
     source_inventory: List[dict]
+    visual_blueprint: List[dict]
     visuals: List[dict]
     packaged_segments: List[dict]
     review: QAReview | None
@@ -647,18 +648,34 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
         article_raw.get("images", []),
         job_id,
     )
-    (overall_headline, copy_plan), source_inventory = await asyncio.gather(copy_future, source_future)
+
+    async def _visual_blueprint_task() -> List[dict]:
+        source_assets = await source_future
+        return await loop.run_in_executor(
+            None,
+            plan_visual_blueprint,
+            segments_raw,
+            source_assets,
+        )
+
+    visual_blueprint_future = asyncio.create_task(_visual_blueprint_task())
+
+    (overall_headline, copy_plan) = await copy_future
+    source_inventory = await source_future
+    visual_blueprint = await visual_blueprint_future
 
     record_trace_event(
         job,
         "packaging",
         "parallel_fanout",
-        "Copy generation and source-image preparation completed.",
+        "Headline copy and visual-routing blueprint completed in parallel.",
         output_payload={
             "copy_segments": len(copy_plan),
             "source_assets": len(source_inventory),
+            "visual_blueprint_segments": len(visual_blueprint),
         },
     )
+    append_agent_output(job, "packaging", "Visual blueprint", visual_blueprint, kind="json")
 
     llm_packaging_overrides = {}
     if use_gemini and gemini_api_key:
@@ -687,6 +704,7 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
         article_raw.get("source_domain", ""),
         job_id,
         source_inventory,
+        visual_blueprint,
     )
 
     packaged_segments = _build_segment_records(segments_raw, narrations, hydrated_packages, visuals)
@@ -709,6 +727,7 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
             "overall_headline": overall_headline,
             "source_visuals": sum(1 for item in packaged_segments if item.get("source_visual_used")),
             "ai_support_visuals": sum(1 for item in packaged_segments if item.get("ai_support_visual_prompt")),
+            "visual_blueprint_segments": len(visual_blueprint),
             "transition_profile": packaged_segments[0].get("transition_profile", "general") if packaged_segments else "general",
             "transition_intensity": packaged_segments[0].get("transition_intensity", "standard") if packaged_segments else "standard",
             "llm_overrides": bool(llm_packaging_overrides),
@@ -737,6 +756,7 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
         "copy_plan": copy_plan,
         "hydrated_packages": hydrated_packages,
         "source_inventory": source_inventory,
+        "visual_blueprint": visual_blueprint,
         "visuals": visuals,
         "packaged_segments": packaged_segments,
         "route_history": route_history,
@@ -983,9 +1003,17 @@ async def _node_retry_packaging(state: GraphState, ctx: Dict[str, Any]) -> Dict[
         if index < len(copy_plan):
             copy_plan[index] = _tighten_packaging(copy_plan[index])
 
-    hydrated_packages = _hydrate_copy_plan(segments_raw, narrations, copy_plan)
-
     loop = asyncio.get_running_loop()
+    hydrated_packages = _hydrate_copy_plan(segments_raw, narrations, copy_plan)
+    visual_blueprint = state.get("visual_blueprint") or []
+    if not visual_blueprint:
+        visual_blueprint = await loop.run_in_executor(
+            None,
+            plan_visual_blueprint,
+            segments_raw,
+            state.get("source_inventory", []),
+        )
+
     visuals = await loop.run_in_executor(
         None,
         plan_visuals,
@@ -995,6 +1023,7 @@ async def _node_retry_packaging(state: GraphState, ctx: Dict[str, Any]) -> Dict[
         state["article_raw"].get("source_domain", ""),
         ctx["job_id"],
         state.get("source_inventory", []),
+        visual_blueprint,
     )
     packaged_segments = _build_segment_records(segments_raw, narrations, hydrated_packages, visuals)
 
@@ -1023,6 +1052,7 @@ async def _node_retry_packaging(state: GraphState, ctx: Dict[str, Any]) -> Dict[
         **_passthrough(state),
         "copy_plan": copy_plan,
         "hydrated_packages": hydrated_packages,
+        "visual_blueprint": visual_blueprint,
         "visuals": visuals,
         "packaged_segments": packaged_segments,
         "retry_round": int(state.get("retry_round", 0)) + 1,

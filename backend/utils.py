@@ -48,6 +48,7 @@ class Config:
     WORDS_PER_SECOND: float = float(os.getenv("WORDS_PER_SECOND", "2.5"))
     QA_THRESHOLD: float = float(os.getenv("QA_THRESHOLD", "0.6"))
     MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "2"))
+    CORS_ALLOWED_ORIGINS: str = os.getenv("CORS_ALLOWED_ORIGINS", "*")
 
     def __init__(self):
         self.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

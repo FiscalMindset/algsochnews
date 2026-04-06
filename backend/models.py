@@ -129,6 +129,8 @@ class QAReview(BaseModel):
     retry_rounds: int = 0
     retry_decision: str = "finalize"
     weak_segments: List[int] = Field(default_factory=list)
+    hard_failures: List[str] = Field(default_factory=list)
+    gating: Dict[str, Any] = Field(default_factory=dict)
     notes: List[str] = Field(default_factory=list)
     criteria: List[ReviewCriterion] = Field(default_factory=list)
     score_breakdown: Dict[str, float] = Field(default_factory=dict)

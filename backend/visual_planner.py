@@ -124,6 +124,50 @@ def prepare_source_images(article_images: List[str], job_id: str) -> List[dict]:
     return downloaded
 
 
+def plan_visual_blueprint(
+    segments: Sequence[dict],
+    source_inventory: Optional[Sequence[dict]] = None,
+) -> List[dict]:
+    """
+    Create a lightweight visual-routing blueprint independent from headline copy.
+    This can run in parallel with copy/headline generation and later be merged
+    with the richer packaging metadata.
+    """
+    total = len(segments)
+    source_budget = len(source_inventory or [])
+    blueprint: List[dict] = []
+
+    for index, seg in enumerate(segments):
+        segment_type = str(seg.get("segment_type", "body"))
+        prefer_source = segment_type in {"intro", "outro"} or index % 2 == 0
+        if segment_type == "body" and index == max(0, total - 2):
+            prefer_source = True
+
+        preferred_kind = "source" if prefer_source and source_budget > 0 else "ai_support"
+        if preferred_kind == "source":
+            source_budget -= 1
+
+        blueprint.append(
+            {
+                "index": index,
+                "segment_type": segment_type,
+                "preferred_visual_kind": preferred_kind,
+                "preferred_layout": (
+                    "anchor_left + source_visual_right"
+                    if preferred_kind == "source"
+                    else "anchor_left + ai_support_visual_right"
+                ),
+                "reason": (
+                    "Prioritize source grounding for opening/closing or high-salience beats."
+                    if preferred_kind == "source"
+                    else "Fallback to AI support visual where source assets are unavailable."
+                ),
+            }
+        )
+
+    return blueprint
+
+
 def _fit_cover(img: Image.Image, size: tuple[int, int]) -> Image.Image:
     target_w, target_h = size
     img = img.convert("RGB")
@@ -715,6 +759,7 @@ def plan_visuals(
     source_domain: str,
     job_id: str,
     source_inventory: Optional[List[dict]] = None,
+    visual_blueprint: Optional[Sequence[dict]] = None,
 ) -> List[dict]:
     media_dir = config.MEDIA_DIR / job_id
     support_dir = media_dir / "support"
@@ -729,14 +774,31 @@ def plan_visuals(
 
     visuals: List[dict] = []
     source_cursor = 0
+    blueprint_by_index = {
+        int(item.get("index", -1)): item
+        for item in (visual_blueprint or [])
+        if isinstance(item, dict)
+    }
 
     for index, (seg, package) in enumerate(zip(segments, packages)):
-        prefer_source = seg["segment_type"] in {"intro", "outro"} or index % 2 == 0
+        blueprint_item = blueprint_by_index.get(index, {})
+        preferred_kind = str(blueprint_item.get("preferred_visual_kind", "")).strip().lower()
+
+        if preferred_kind in {"source", "ai_support"}:
+            prefer_source = preferred_kind == "source"
+        else:
+            prefer_source = seg["segment_type"] in {"intro", "outro"} or index % 2 == 0
+
         source_item = None
         if prefer_source and source_cursor < len(downloaded):
             source_item = downloaded[source_cursor]
             source_cursor += 1
-        elif source_cursor < len(downloaded) and seg["segment_type"] == "body" and index == len(segments) - 2:
+        elif (
+            not blueprint_item
+            and source_cursor < len(downloaded)
+            and seg["segment_type"] == "body"
+            and index == len(segments) - 2
+        ):
             source_item = downloaded[source_cursor]
             source_cursor += 1
 
@@ -745,6 +807,7 @@ def plan_visuals(
             f"Broadcast support visual for '{package['main_headline']}'. "
             f"Context: {support_copy}"
         )
+        support_prompt = str(blueprint_item.get("support_prompt") or support_prompt)
 
         if source_item:
             layout = "anchor_left + source_visual_right"

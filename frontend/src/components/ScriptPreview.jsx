@@ -1,8 +1,93 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Captions, Check, ChevronDown, ChevronUp, Clipboard, FileText, Mic, Rows3 } from 'lucide-react'
+import { resolveAssetUrl } from '../api/client.js'
+
+function parseScreenplayBlocks(text) {
+  const raw = String(text || '').replace(/\r/g, '').trim()
+  if (!raw) return []
+
+  const chunks = raw
+    .split(/\n(?=Segment\s+\d+\s+\[)/g)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+
+  if (chunks.length === 1 && !/^Segment\s+\d+\s+\[/.test(chunks[0])) {
+    const plainLines = chunks[0]
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    return [{ heading: 'Screenplay', rows: [], notes: plainLines }]
+  }
+
+  return chunks.map((chunk, index) => {
+    const lines = chunk
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    const heading = lines[0] || `Segment ${index + 1}`
+    const rows = []
+    const notes = []
+
+    for (const line of lines.slice(1)) {
+      const match = line.match(/^([^:]{2,40}):\s*(.*)$/)
+      if (match) {
+        rows.push({ label: match[1], value: match[2] })
+      } else {
+        notes.push(line)
+      }
+    }
+
+    return { heading, rows, notes }
+  })
+}
+
+function renderHighlightedJson(text) {
+  const source = String(text || '')
+  const output = []
+  const tokenRegex = /("(?:\\.|[^"\\])*"(?=\s*:))|("(?:\\.|[^"\\])*")|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?|[{}\[\],:]/g
+
+  let lastIndex = 0
+  let match
+  let tokenIdx = 0
+  while ((match = tokenRegex.exec(source)) !== null) {
+    if (match.index > lastIndex) {
+      output.push(source.slice(lastIndex, match.index))
+    }
+
+    const token = match[0]
+    let className = 'json-token json-token--punct'
+    if (token.startsWith('"')) {
+      const rest = source.slice(tokenRegex.lastIndex)
+      className = /^\s*:/.test(rest)
+        ? 'json-token json-token--key'
+        : 'json-token json-token--string'
+    } else if (/^-?\d/.test(token)) {
+      className = 'json-token json-token--number'
+    } else if (token === 'true' || token === 'false') {
+      className = 'json-token json-token--boolean'
+    } else if (token === 'null') {
+      className = 'json-token json-token--null'
+    }
+
+    output.push(
+      <span key={`json-token-${tokenIdx}`} className={className}>
+        {token}
+      </span>,
+    )
+    tokenIdx += 1
+    lastIndex = tokenRegex.lastIndex
+  }
+
+  if (lastIndex < source.length) {
+    output.push(source.slice(lastIndex))
+  }
+
+  return output
+}
 
 function SegmentCard({ segment, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen)
+  const frameUrl = resolveAssetUrl(segment?.html_frame_url)
 
   return (
     <article className="script-card">
@@ -35,10 +120,10 @@ function SegmentCard({ segment, defaultOpen = false }) {
               <p><strong>Lower third:</strong> {segment.lower_third}</p>
               <p><strong>Camera motion:</strong> {segment.camera_motion}</p>
               <p><strong>Transition:</strong> {segment.transition}</p>
-              {segment.html_frame_url && (
+              {frameUrl && (
                 <p>
                   <strong>HTML frame:</strong>{' '}
-                  <a href={segment.html_frame_url} target="_blank" rel="noreferrer">Open frame preview</a>
+                  <a href={frameUrl} target="_blank" rel="noreferrer">Open frame preview</a>
                 </p>
               )}
             </div>
@@ -62,11 +147,11 @@ function SegmentCard({ segment, defaultOpen = false }) {
             </div>
           </div>
 
-          {segment.html_frame_url && (
+          {frameUrl && (
             <div className="script-frame-preview">
               <div className="script-card-label">HTML frame preview</div>
               <iframe
-                src={segment.html_frame_url}
+                src={frameUrl}
                 title={`frame-${segment.segment_id}`}
                 loading="lazy"
                 sandbox="allow-same-origin"
@@ -209,8 +294,15 @@ function SegmentCard({ segment, defaultOpen = false }) {
 export default function ScriptPreview({ script, requestedView = null }) {
   const [viewMode, setViewMode] = useState('screenplay')
   const [copyState, setCopyState] = useState('')
+  const [readerSize, setReaderSize] = useState('medium')
+  const [readerFocus, setReaderFocus] = useState(false)
   const showJson = viewMode === 'json'
   const jsonPreview = useMemo(() => JSON.stringify(script, null, 2), [script])
+  const highlightedJson = useMemo(() => renderHighlightedJson(jsonPreview), [jsonPreview])
+  const screenplayBlocks = useMemo(
+    () => parseScreenplayBlocks(script?.screenplay_text || ''),
+    [script?.screenplay_text],
+  )
 
   useEffect(() => {
     if (requestedView === 'json' || requestedView === 'screenplay') {
@@ -268,14 +360,6 @@ export default function ScriptPreview({ script, requestedView = null }) {
         </div>
         <div className="script-head-actions">
           <span className="view-indicator">Showing: {showJson ? 'JSON' : 'Screenplay'}</span>
-          <button
-            type="button"
-            className="copy-btn"
-            onClick={() => copyText(showJson ? jsonPreview : script.screenplay_text, showJson ? 'JSON copied' : 'Screenplay copied')}
-          >
-            {copyState ? <Check size={14} /> : <Clipboard size={14} />}
-            {copyState || `Copy ${showJson ? 'JSON' : 'screenplay'}`}
-          </button>
         </div>
       </div>
 
@@ -342,14 +426,96 @@ export default function ScriptPreview({ script, requestedView = null }) {
 
       {showJson && (
         <div id="script-json-block" className="json-block">
-          <div className="script-block-title">Structured JSON (screenplay remains visible below)</div>
-          <pre>{jsonPreview}</pre>
+          <div className="script-block-head">
+            <div className="script-block-title">Structured JSON (screenplay remains visible below)</div>
+            <button
+              type="button"
+              className="block-copy-btn"
+              onClick={() => copyText(jsonPreview, 'JSON copied')}
+            >
+              {copyState === 'JSON copied' ? <Check size={13} /> : <Clipboard size={13} />}
+              {copyState === 'JSON copied' ? 'JSON copied' : 'Copy JSON'}
+            </button>
+          </div>
+          <pre className="json-reader"><code>{highlightedJson}</code></pre>
         </div>
       )}
 
       <div id="script-screenplay-block" className="screenplay-block">
-        <div className="script-block-title">Human-readable screenplay</div>
-        <pre>{script.screenplay_text}</pre>
+        <div className="script-block-head">
+          <div className="script-block-title">Human-readable screenplay</div>
+          <div className="screenplay-tools">
+            <div className="reader-size-group">
+              <button
+                type="button"
+                className={`reader-size-btn ${readerSize === 'small' ? 'reader-size-btn--active' : ''}`}
+                onClick={() => setReaderSize('small')}
+              >
+                A-
+              </button>
+              <button
+                type="button"
+                className={`reader-size-btn ${readerSize === 'medium' ? 'reader-size-btn--active' : ''}`}
+                onClick={() => setReaderSize('medium')}
+              >
+                A
+              </button>
+              <button
+                type="button"
+                className={`reader-size-btn ${readerSize === 'large' ? 'reader-size-btn--active' : ''}`}
+                onClick={() => setReaderSize('large')}
+              >
+                A+
+              </button>
+            </div>
+            <button
+              type="button"
+              className={`reader-focus-btn ${readerFocus ? 'reader-focus-btn--active' : ''}`}
+              onClick={() => setReaderFocus((value) => !value)}
+            >
+              {readerFocus ? 'Exit focus' : 'Focus mode'}
+            </button>
+            <button
+              type="button"
+              className="block-copy-btn"
+              onClick={() => copyText(script.screenplay_text, 'Screenplay copied')}
+            >
+              {copyState === 'Screenplay copied' ? <Check size={13} /> : <Clipboard size={13} />}
+              {copyState === 'Screenplay copied' ? 'Screenplay copied' : 'Copy screenplay'}
+            </button>
+          </div>
+        </div>
+        <div className={`screenplay-reader screenplay-reader--${readerSize} ${readerFocus ? 'screenplay-reader--focus' : ''}`}>
+          {screenplayBlocks.length ? screenplayBlocks.map((block, index) => (
+            <article key={`block-${index}`} className="screenplay-segment">
+              <header className="screenplay-segment-head">
+                <span className="screenplay-segment-no">{index + 1}</span>
+                <h3>{block.heading}</h3>
+              </header>
+
+              {!!block.rows?.length && (
+                <div className="screenplay-segment-grid">
+                  {block.rows.map((row, rowIndex) => (
+                    <div key={`row-${index}-${rowIndex}`} className="screenplay-segment-row">
+                      <span>{row.label}</span>
+                      <p>{row.value || '—'}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!!block.notes?.length && (
+                <div className="screenplay-segment-notes">
+                  {block.notes.map((line, lineIndex) => (
+                    <p key={`note-${index}-${lineIndex}`}>{line}</p>
+                  ))}
+                </div>
+              )}
+            </article>
+          )) : (
+            <p className="screenplay-empty">No screenplay text available.</p>
+          )}
+        </div>
       </div>
 
       <div className="script-side-grid">
@@ -438,27 +604,88 @@ export default function ScriptPreview({ script, requestedView = null }) {
           border-radius: 999px;
           padding: 9px 12px;
         }
-        .copy-btn {
+        .script-block-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin-bottom: 12px;
+        }
+        .script-block-title {
+          font-size: 12px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.34);
+          margin: 0;
+        }
+        .screenplay-tools {
           display: inline-flex;
           align-items: center;
           gap: 8px;
+          flex-wrap: wrap;
+        }
+        .reader-size-group {
+          display: inline-flex;
+          border: 1px solid rgba(255,255,255,0.14);
+          border-radius: 999px;
+          background: rgba(255,255,255,0.05);
+          overflow: hidden;
+        }
+        .reader-size-btn,
+        .reader-focus-btn,
+        .block-copy-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          border-radius: 999px;
+          padding: 8px 12px;
+          cursor: pointer;
+          font-weight: 700;
+          font-size: 11px;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(255,255,255,0.06);
+          color: rgba(255,255,255,0.88);
+          transition: all 0.2s ease;
+        }
+        .reader-size-btn {
+          border: none;
+          border-right: 1px solid rgba(255,255,255,0.14);
+          border-radius: 0;
+          min-width: 40px;
+          justify-content: center;
+          background: transparent;
+          padding: 8px 10px;
+        }
+        .reader-size-btn:last-child {
+          border-right: none;
+        }
+        .reader-size-btn--active {
+          background: rgba(59,130,246,0.24);
+          color: #dbeafe;
+        }
+        .reader-focus-btn {
+          border-color: rgba(99,102,241,0.38);
+          background: rgba(99,102,241,0.12);
+          color: #c7d2fe;
+        }
+        .reader-focus-btn--active {
+          background: rgba(99,102,241,0.24);
+          border-color: rgba(99,102,241,0.6);
+          color: #e0e7ff;
+        }
+        .block-copy-btn {
           border: 1px solid rgba(16,185,129,0.38);
           background: rgba(16,185,129,0.12);
           color: #bbf7d0;
-          border-radius: 999px;
-          padding: 10px 14px;
-          cursor: pointer;
-          font-weight: 700;
-          border-color: rgba(16,185,129,0.38);
         }
-        .copy-btn:hover {
+        .block-copy-btn:hover {
           border-color: rgba(16,185,129,0.58);
           background: rgba(16,185,129,0.2);
         }
-        .json-toggle--active {
-          background: rgba(239,68,68,0.14);
-          border-color: rgba(239,68,68,0.34);
-          color: #fecaca;
+        .reader-focus-btn:hover,
+        .reader-size-btn:hover {
+          background: rgba(255,255,255,0.14);
         }
         .script-shell-meta {
           display: flex;
@@ -480,20 +707,12 @@ export default function ScriptPreview({ script, requestedView = null }) {
           border-radius: 20px;
           padding: 18px;
         }
-        .script-block-title {
-          font-size: 12px;
-          letter-spacing: 0.12em;
-          text-transform: uppercase;
-          color: rgba(255,255,255,0.34);
-          margin-bottom: 12px;
-        }
         .script-block-title--with-icon {
           display: inline-flex;
           align-items: center;
           gap: 8px;
         }
-        .screenplay-block pre,
-        .json-block pre {
+        .json-reader {
           margin: 0;
           white-space: pre-wrap;
           word-break: break-word;
@@ -501,6 +720,158 @@ export default function ScriptPreview({ script, requestedView = null }) {
           line-height: 1.7;
           color: rgba(255,255,255,0.82);
           font-family: var(--font-mono);
+          max-height: 420px;
+          overflow: auto;
+          border-radius: 14px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.03);
+          padding: 12px;
+        }
+        .json-reader code {
+          font-family: var(--font-mono);
+        }
+        .json-token--key {
+          color: #93c5fd;
+          font-weight: 700;
+        }
+        .json-token--string {
+          color: #86efac;
+        }
+        .json-token--number {
+          color: #fca5a5;
+        }
+        .json-token--boolean {
+          color: #c4b5fd;
+          font-weight: 700;
+        }
+        .json-token--null {
+          color: #fbbf24;
+          font-weight: 700;
+        }
+        .json-token--punct {
+          color: rgba(255,255,255,0.62);
+        }
+        .screenplay-reader {
+          border-radius: 16px;
+          border: 1px solid rgba(255,255,255,0.1);
+          background:
+            linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
+            repeating-linear-gradient(
+              to bottom,
+              transparent,
+              transparent 36px,
+              rgba(255,255,255,0.04) 36px,
+              rgba(255,255,255,0.04) 37px
+            );
+          padding: 16px;
+          max-height: 520px;
+          overflow: auto;
+        }
+        .screenplay-reader--focus {
+          max-width: 960px;
+          margin: 0 auto;
+          background:
+            linear-gradient(180deg, rgba(99,102,241,0.08), rgba(16,185,129,0.04)),
+            rgba(7,11,20,0.92);
+        }
+        .screenplay-reader--small .screenplay-segment-head h3,
+        .screenplay-reader--small .screenplay-segment-row p,
+        .screenplay-reader--small .screenplay-segment-notes p {
+          font-size: 14px;
+          line-height: 1.7;
+        }
+        .screenplay-reader--medium .screenplay-segment-head h3,
+        .screenplay-reader--medium .screenplay-segment-row p,
+        .screenplay-reader--medium .screenplay-segment-notes p {
+          font-size: 15px;
+          line-height: 1.85;
+        }
+        .screenplay-reader--large .screenplay-segment-head h3,
+        .screenplay-reader--large .screenplay-segment-row p,
+        .screenplay-reader--large .screenplay-segment-notes p {
+          font-size: 17px;
+          line-height: 2;
+        }
+        .screenplay-segment {
+          border-radius: 14px;
+          border: 1px solid rgba(255,255,255,0.1);
+          background: rgba(8,12,22,0.58);
+          padding: 12px;
+          margin: 0 0 10px;
+        }
+        .screenplay-segment:last-child {
+          margin-bottom: 0;
+        }
+        .screenplay-segment-head {
+          display: grid;
+          grid-template-columns: 44px minmax(0, 1fr);
+          gap: 10px;
+          align-items: start;
+          margin: 0 0 10px;
+        }
+        .screenplay-segment-head h3 {
+          margin: 0;
+          font-size: 14px;
+          line-height: 1.45;
+          color: rgba(245,247,255,0.96);
+          font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+        }
+        .screenplay-segment-no {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: rgba(255,255,255,0.56);
+          border-right: 1px solid rgba(255,255,255,0.12);
+          padding-right: 8px;
+          text-align: right;
+          line-height: 1.6;
+          user-select: none;
+        }
+        .screenplay-segment-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+          gap: 8px;
+        }
+        .screenplay-segment-row {
+          border-radius: 10px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.04);
+          padding: 8px 9px;
+          min-width: 0;
+        }
+        .screenplay-segment-row span {
+          display: inline-block;
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: rgba(255,255,255,0.52);
+          margin-bottom: 4px;
+        }
+        .screenplay-segment-row p {
+          margin: 0;
+          color: rgba(245,247,255,0.9);
+          font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+          overflow-wrap: anywhere;
+        }
+        .screenplay-segment-notes {
+          margin-top: 8px;
+          display: grid;
+          gap: 7px;
+        }
+        .screenplay-segment-notes p {
+          margin: 0;
+          border-radius: 9px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.03);
+          padding: 8px 9px;
+          color: rgba(245,247,255,0.86);
+          font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+          overflow-wrap: anywhere;
+        }
+        .screenplay-empty {
+          margin: 0;
+          color: rgba(255,255,255,0.6);
+          font-size: 13px;
+          font-style: italic;
         }
         .script-card-list {
           display: flex;
@@ -637,6 +1008,23 @@ export default function ScriptPreview({ script, requestedView = null }) {
           background: rgba(59,130,246,0.1);
         }
         @media (max-width: 860px) {
+          .script-block-head {
+            align-items: flex-start;
+          }
+          .screenplay-tools {
+            width: 100%;
+          }
+          .reader-focus-btn,
+          .block-copy-btn {
+            flex: 1;
+            justify-content: center;
+          }
+          .screenplay-segment-head {
+            grid-template-columns: 34px minmax(0, 1fr);
+          }
+          .screenplay-segment-grid {
+            grid-template-columns: 1fr;
+          }
           .script-side-grid {
             grid-template-columns: 1fr;
           }

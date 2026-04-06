@@ -1,3 +1,5 @@
+import { resolveAssetUrl } from '../api/client.js'
+
 function fmt(seconds) {
   const safe = Math.max(0, Number(seconds || 0))
   const m = Math.floor(safe / 60)
@@ -121,22 +123,24 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
       <div className="timeline-grid">
         {segments.map((segment, index) => {
           const isActive = currentTime >= segment.start_time && currentTime <= segment.end_time
+          const frameUrl = resolveAssetUrl(segment.html_frame_url)
+          const sceneImageUrl = resolveAssetUrl(segment.scene_image_url)
           return (
           <article
             key={segment.segment_id}
             className={`timeline-card ${isActive ? 'timeline-card--active' : ''}`}
           >
             <div className="timeline-card-media">
-              {segment.html_frame_url ? (
+              {frameUrl ? (
                 <iframe
-                  src={segment.html_frame_url}
+                  src={frameUrl}
                   title={`frame-${segment.segment_id}`}
                   loading="lazy"
                   sandbox="allow-same-origin"
                   scrolling="no"
                 />
-              ) : segment.scene_image_url ? (
-                <img src={segment.scene_image_url} alt={segment.main_headline} />
+              ) : sceneImageUrl ? (
+                <img src={sceneImageUrl} alt={segment.main_headline} />
               ) : (
                 <div className="timeline-card-fallback">{segment.top_tag}</div>
               )}
@@ -182,10 +186,10 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
                   <strong>{segment.control_room_cue}</strong>
                 </div>
               )}
-              {segment.html_frame_url && (
+              {frameUrl && (
                 <div className="timeline-detail-row">
                   <span>HTML frame</span>
-                  <strong><a href={segment.html_frame_url} target="_blank" rel="noreferrer">Open preview</a></strong>
+                  <strong><a href={frameUrl} target="_blank" rel="noreferrer">Open preview</a></strong>
                 </div>
               )}
             </div>

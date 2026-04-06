@@ -1,6 +1,6 @@
 // hooks/useGenerate.js — Custom hook for the full generate flow
 import { useState, useRef, useCallback } from 'react'
-import { submitGenerate, pollStatus } from '../api/client'
+import { resolveAssetUrl, submitGenerate, pollStatus } from '../api/client'
 
 const POLL_INTERVAL_MS = 2000
 
@@ -37,7 +37,7 @@ export default function useGenerate() {
         setProgress(data.progress ?? 0)
         setMessage(data.message ?? '')
         setStatus(data.status)
-        setPreviewVideoUrl(data.preview_video_url ?? null)
+        setPreviewVideoUrl(data.preview_video_url ? resolveAssetUrl(data.preview_video_url) : null)
         setAgents(data.agents ?? [])
         setActivityLog(data.activity_log ?? [])
         setTraceEvents(data.trace_events ?? [])

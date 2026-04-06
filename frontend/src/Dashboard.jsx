@@ -10,7 +10,7 @@ import TimelineView from './components/TimelineView.jsx'
 import URLInput from './components/URLInput.jsx'
 import VideoPlayer from './components/VideoPlayer.jsx'
 import useGenerate from './hooks/useGenerate.js'
-import { videoUrl } from './api/client.js'
+import { clientPackUrl, videoUrl } from './api/client.js'
 
 export default function Dashboard() {
   const [currentTime, setCurrentTime] = useState(0)
@@ -77,6 +77,17 @@ export default function Dashboard() {
   function jumpToScript(view) {
     setScriptViewRequest(view)
     setPendingScriptScroll(view)
+  }
+
+  function jumpToVideo() {
+    const videoSection = document.getElementById('video-preview-section')
+    if (videoSection) {
+      videoSection.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+
+    const scriptSection = document.getElementById('script-preview-section')
+    scriptSection?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
   return (
@@ -184,6 +195,16 @@ export default function Dashboard() {
             </div>
             <div className="result-actions">
               {vidUrl && <DownloadButton videoUrl={vidUrl} jobId={jobId} />}
+              {jobId && (
+                <a className="pack-download-btn" href={clientPackUrl(jobId)} download>
+                  Client Pack
+                </a>
+              )}
+              {vidUrl && (
+                <button className="quick-view-btn" onClick={jumpToVideo}>
+                  Video
+                </button>
+              )}
               <button className="quick-view-btn" onClick={() => jumpToScript('screenplay')}>
                 Screenplay
               </button>
@@ -213,7 +234,7 @@ export default function Dashboard() {
           />
 
           {vidUrl && (
-            <section className="fade-up fade-up-delay-1">
+            <section id="video-preview-section" className="fade-up fade-up-delay-1">
               <VideoPlayer
                 videoUrl={vidUrl}
                 title={script?.overall_headline || 'Algsoch News Broadcast'}
@@ -378,6 +399,24 @@ export default function Dashboard() {
           gap: 12px;
           flex-wrap: wrap;
         }
+        .pack-download-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          cursor: pointer;
+          font-weight: 700;
+          text-decoration: none;
+          min-width: 124px;
+          padding: 12px 16px;
+          color: #dcfce7;
+          border: 1px solid rgba(16,185,129,0.45);
+          background: linear-gradient(135deg, rgba(16,185,129,0.28), rgba(5,150,105,0.18));
+        }
+        .pack-download-btn:hover {
+          border-color: rgba(16,185,129,0.58);
+          background: linear-gradient(135deg, rgba(16,185,129,0.36), rgba(5,150,105,0.24));
+        }
         .production-suite {
           display: flex;
           flex-direction: column;
@@ -420,6 +459,7 @@ export default function Dashboard() {
           .result-actions {
             width: 100%;
           }
+          .pack-download-btn,
           .quick-view-btn,
           .reset-btn {
             flex: 1;

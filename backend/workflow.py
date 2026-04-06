@@ -86,7 +86,7 @@ def build_workflow_map() -> dict:
             "label": "Packaging fan-out",
             "tasks": [
                 "Headline + subheadline generation",
-                "Visual planning + layout routing",
+                "Visual blueprint + layout routing",
             ],
         },
         "conditional_edges": [

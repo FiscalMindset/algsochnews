@@ -104,12 +104,14 @@ cd ..
 
 ```bash
 cp .env.example .env
+cp frontend/.env.example frontend/.env
 ```
 
 Set at least:
 
 - GEMINI_API_KEY
 - GEMINI_MODEL (example: gemini-2.5-pro)
+- VITE_API_BASE_URL (example: `http://127.0.0.1:8000` for local dev)
 
 ### 4) Run backend
 
@@ -222,6 +224,39 @@ Output includes job id, selected model, QA summary, retry decision/rounds, video
 - GET /outputs/{job_id}/script.json
 - GET /outputs/{job_id}/final_video.mp4
 - GET /api/docs
+
+## Deploy On Render
+
+This repository includes a Render Blueprint at `render.yaml` for deploying:
+
+- `algsoch-news-api` as a Docker web service (Python + FFmpeg)
+- `algsoch-news-frontend` as a Node web service serving the Vite production build
+
+### 1) Import the blueprint
+
+- In Render, select **New Blueprint**.
+- Point to this repository and select `render.yaml`.
+
+### 2) Set required environment variables
+
+For `algsoch-news-api`:
+
+- `GEMINI_API_KEY` (required)
+- `GEMINI_MODEL` (defaults to `gemini-2.5-pro`)
+- `CORS_ALLOWED_ORIGINS` (comma-separated frontend origins for production; use `*` only for open dev setups)
+
+For `algsoch-news-frontend`:
+
+- `VITE_API_BASE_URL` = full backend URL, for example `https://algsoch-news-api.onrender.com`
+
+### 3) Verify deploy health
+
+- Backend health endpoint: `/health`
+- Frontend should be able to submit URL generation and stream status without same-origin assumptions.
+
+### 4) Security note
+
+- If any API key was previously shared in chat/logs, rotate it before production deployment.
 
 ## Generated Artifacts
 

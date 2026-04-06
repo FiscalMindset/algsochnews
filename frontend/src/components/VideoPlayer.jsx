@@ -11,6 +11,7 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react'
+import { resolveAssetUrl } from '../api/client.js'
 
 function formatTime(seconds) {
   const safe = Math.max(0, Number(seconds || 0))
@@ -47,6 +48,7 @@ export default function VideoPlayer({
   const transcriptCues = script?.live_transcript || []
   const screenplayText = script?.screenplay_text || ''
   const jsonText = useMemo(() => (script ? JSON.stringify(script, null, 2) : ''), [script])
+  const resolvedVideoUrl = useMemo(() => resolveAssetUrl(videoUrl), [videoUrl])
 
   const activeCue = useMemo(() => {
     if (!transcriptCues.length) return null
@@ -172,7 +174,7 @@ export default function VideoPlayer({
         <video
           ref={videoRef}
           id="news-video-player"
-          src={videoUrl}
+          src={resolvedVideoUrl}
           className="vp-video"
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={(event) => setDuration(event.target.duration || 0)}
