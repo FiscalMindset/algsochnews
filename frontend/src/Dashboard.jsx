@@ -32,6 +32,8 @@ export default function Dashboard() {
     review,
     workflowOverview,
     modelVerification,
+    backendStatus,
+    backendStatusMessage,
     generate,
     reset,
   } = useGenerate()
@@ -106,7 +108,12 @@ export default function Dashboard() {
 
       {!isDone && (
         <section className="input-card fade-up fade-up-delay-1">
-          <URLInput onSubmit={generate} disabled={isProcessing} />
+          <URLInput
+            onSubmit={generate}
+            disabled={isProcessing}
+            backendStatus={backendStatus}
+            backendStatusMessage={backendStatusMessage}
+          />
         </section>
       )}
 
@@ -130,6 +137,8 @@ export default function Dashboard() {
               progress={progress}
               message={message}
               status={status}
+              backendStatus={backendStatus}
+              backendStatusMessage={backendStatusMessage}
               agents={agents}
               workflowOverview={workflowOverview}
               modelVerification={modelVerification}

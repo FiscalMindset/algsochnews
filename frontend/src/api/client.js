@@ -4,6 +4,12 @@ import axios from 'axios'
 const RAW_API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').trim()
 const API_BASE_URL = RAW_API_BASE_URL.replace(/\/+$/, '')
 
+export function getApiBaseUrl() {
+  if (API_BASE_URL) return API_BASE_URL
+  if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin
+  return '/'
+}
+
 function isAbsoluteUrl(value) {
   return /^https?:\/\//i.test(value) || /^blob:/i.test(value) || /^data:/i.test(value)
 }
@@ -55,6 +61,11 @@ export async function submitGenerate(
  */
 export async function pollStatus(jobId) {
   const res = await api.get(`/status/${jobId}`)
+  return res.data
+}
+
+export async function checkBackendHealth() {
+  const res = await api.get('/health')
   return res.data
 }
 

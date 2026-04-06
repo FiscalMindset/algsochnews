@@ -17,7 +17,12 @@ function isValidUrl(str) {
   }
 }
 
-export default function URLInput({ onSubmit, disabled }) {
+export default function URLInput({
+  onSubmit,
+  disabled,
+  backendStatus = 'unknown',
+  backendStatusMessage = '',
+}) {
   const [url, setUrl]         = useState('')
   const [touched, setTouched] = useState(false)
   const [useGemini, setUseGemini]       = useState(true)
@@ -28,6 +33,21 @@ export default function URLInput({ onSubmit, disabled }) {
 
   const valid   = isValidUrl(url)
   const invalid = touched && url.length > 0 && !valid
+
+  const backendLabelByState = {
+    unknown: 'Backend status unknown',
+    checking: 'Checking backend...',
+    online: 'Backend live',
+    degraded: 'Backend unstable',
+    offline: 'Backend offline',
+  }
+  const backendClassByState = {
+    unknown: 'backend-pill--unknown',
+    checking: 'backend-pill--checking',
+    online: 'backend-pill--online',
+    degraded: 'backend-pill--degraded',
+    offline: 'backend-pill--offline',
+  }
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -40,7 +60,12 @@ export default function URLInput({ onSubmit, disabled }) {
       <div className="url-input-label">
         <span className="live-dot" />
         <span>Enter news article URL</span>
+        <span className={`backend-pill ${backendClassByState[backendStatus] || backendClassByState.unknown}`}>
+          {backendLabelByState[backendStatus] || backendLabelByState.unknown}
+        </span>
       </div>
+
+      {!!backendStatusMessage && <div className="backend-note">{backendStatusMessage}</div>}
 
       <form onSubmit={handleSubmit} className="url-form">
         <div className={`url-field ${invalid ? 'url-field--error' : ''} ${valid && touched ? 'url-field--valid' : ''}`}>
@@ -165,6 +190,49 @@ export default function URLInput({ onSubmit, disabled }) {
           font-size: 13px; font-weight: 600; letter-spacing: 0.08em;
           text-transform: uppercase; color: rgba(255,255,255,0.5);
           margin-bottom: 12px;
+          flex-wrap: wrap;
+        }
+        .backend-pill {
+          font-size: 10px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          border-radius: 999px;
+          padding: 4px 8px;
+          border: 1px solid rgba(148,163,184,0.35);
+          background: rgba(148,163,184,0.14);
+          color: rgba(226,232,240,0.95);
+        }
+        .backend-pill--unknown {
+          border-color: rgba(148,163,184,0.35);
+          background: rgba(148,163,184,0.14);
+          color: rgba(226,232,240,0.95);
+        }
+        .backend-pill--checking {
+          border-color: rgba(59,130,246,0.4);
+          background: rgba(59,130,246,0.14);
+          color: #dbeafe;
+        }
+        .backend-pill--online {
+          border-color: rgba(16,185,129,0.42);
+          background: rgba(16,185,129,0.14);
+          color: #bbf7d0;
+        }
+        .backend-pill--degraded {
+          border-color: rgba(245,158,11,0.45);
+          background: rgba(245,158,11,0.15);
+          color: #fde68a;
+        }
+        .backend-pill--offline {
+          border-color: rgba(239,68,68,0.45);
+          background: rgba(239,68,68,0.15);
+          color: #fecaca;
+        }
+        .backend-note {
+          font-size: 11px;
+          color: rgba(255,255,255,0.52);
+          font-family: var(--font-mono);
+          margin-top: -2px;
+          overflow-wrap: anywhere;
         }
         .url-form { display: flex; flex-direction: column; gap: 14px; }
         .url-field {

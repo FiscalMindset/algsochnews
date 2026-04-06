@@ -1,7 +1,10 @@
 // App.jsx — Root with nav + layout
 import Dashboard from './Dashboard.jsx'
+import { getApiBaseUrl } from './api/client.js'
 
 function Navbar() {
+  const docsHref = `${getApiBaseUrl().replace(/\/+$/, '')}/api/docs`
+
   return (
     <nav className="navbar">
       <div className="nav-inner">
@@ -13,7 +16,7 @@ function Navbar() {
           <span className="nav-version">v3.0</span>
         </div>
         <div className="nav-links">
-          <a href="/api/docs" target="_blank" rel="noopener" className="nav-link">
+          <a href={docsHref} target="_blank" rel="noopener" className="nav-link">
             API Docs
           </a>
           <a href="#" className="nav-link nav-link--muted">Newsroom</a>

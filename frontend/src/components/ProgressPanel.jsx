@@ -44,6 +44,8 @@ export default function ProgressPanel({
   progress,
   message,
   status,
+  backendStatus = 'unknown',
+  backendStatusMessage = '',
   agents = [],
   workflowOverview = null,
   modelVerification = null,
@@ -68,6 +70,14 @@ export default function ProgressPanel({
         ? 'Complete!'
         : message || 'Running LangGraph pipeline...'
 
+  const backendToneClass = {
+    online: 'backend-note--online',
+    checking: 'backend-note--checking',
+    degraded: 'backend-note--degraded',
+    offline: 'backend-note--offline',
+    unknown: 'backend-note--unknown',
+  }[backendStatus] || 'backend-note--unknown'
+
   return (
     <div className="prog-panel glass fade-up">
       <div className="prog-header">
@@ -90,6 +100,10 @@ export default function ProgressPanel({
       </div>
 
       <p className="prog-message">{message}</p>
+
+      <div className={`backend-note ${backendToneClass}`}>
+        <strong>Backend:</strong> {backendStatus} {backendStatusMessage ? `| ${backendStatusMessage}` : ''}
+      </div>
 
       {(articleUrl || jobId) && (
         <div className="workflow-note">
@@ -236,6 +250,41 @@ export default function ProgressPanel({
           font-size: 12px;
           line-height: 1.6;
           color: rgba(219,234,254,0.88);
+        }
+        .backend-note {
+          border-radius: 12px;
+          padding: 10px 12px;
+          border: 1px solid rgba(148,163,184,0.32);
+          background: rgba(148,163,184,0.1);
+          font-size: 12px;
+          line-height: 1.6;
+          color: rgba(226,232,240,0.92);
+          overflow-wrap: anywhere;
+        }
+        .backend-note--online {
+          border-color: rgba(16,185,129,0.34);
+          background: rgba(16,185,129,0.1);
+          color: #bbf7d0;
+        }
+        .backend-note--checking {
+          border-color: rgba(59,130,246,0.34);
+          background: rgba(59,130,246,0.1);
+          color: #dbeafe;
+        }
+        .backend-note--degraded {
+          border-color: rgba(245,158,11,0.34);
+          background: rgba(245,158,11,0.12);
+          color: #fde68a;
+        }
+        .backend-note--offline {
+          border-color: rgba(239,68,68,0.34);
+          background: rgba(239,68,68,0.12);
+          color: #fecaca;
+        }
+        .backend-note--unknown {
+          border-color: rgba(148,163,184,0.32);
+          background: rgba(148,163,184,0.1);
+          color: rgba(226,232,240,0.92);
         }
         .mono-break {
           font-family: var(--font-mono);

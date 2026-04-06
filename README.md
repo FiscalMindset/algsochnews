@@ -19,6 +19,14 @@ Output:
 - visible per-agent workflow activity
 - final MP4 video package
 
+## Live Deployment
+
+- Frontend: https://algsochnews-1.onrender.com
+- Backend API: https://algsochnews.onrender.com
+- Backend Swagger docs: https://algsochnews.onrender.com/api/docs
+
+Note: `/api/docs` is a backend route. Opening `https://algsochnews-1.onrender.com/api/docs` on the frontend domain returns 404 by design.
+
 ## Input To Output
 
 1. Article Extraction Agent fetches and cleans article content.
@@ -247,14 +255,19 @@ For `algsoch-news-api`:
 
 For `algsoch-news-frontend`:
 
-- `VITE_API_BASE_URL` = full backend URL, for example `https://algsoch-news-api.onrender.com`
+- `VITE_API_BASE_URL` = full backend URL, for example `https://algsochnews.onrender.com`
 
 ### 3) Verify deploy health
 
 - Backend health endpoint: `/health`
 - Frontend should be able to submit URL generation and stream status without same-origin assumptions.
 
-### 4) Security note
+### 4) Live environment values
+
+- Backend `CORS_ALLOWED_ORIGINS`: `https://algsochnews-1.onrender.com`
+- Frontend `VITE_API_BASE_URL`: `https://algsochnews.onrender.com`
+
+### 5) Security note
 
 - If any API key was previously shared in chat/logs, rotate it before production deployment.
 
