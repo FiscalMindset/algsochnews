@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Dict
 
 import aiofiles
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,8 +31,10 @@ from backend.models import (
     TraceEvent,
     TranscriptCue,
     AgentTrace,
+    RenderQualityReview,
 )
 from backend.observability import TraceBridge
+from backend.render_review import evaluate_render_quality
 from backend.transcript_alignment import TranscriptAligner, attach_transcript_to_segments
 from backend.tts import synthesize_all
 from backend.utils import config, generate_job_id, get_logger
@@ -70,6 +73,52 @@ app.add_middleware(
 app.mount("/media", StaticFiles(directory=str(config.MEDIA_DIR)), name="media")
 
 JOBS: Dict[str, dict] = {}
+RUNTIME_LOG_LIMIT = 4000
+STATUS_POLL_LOG_INTERVAL_SEC = 1.2
+
+
+def _append_runtime_log(job_id: str, line: str) -> None:
+    job = JOBS.get(job_id)
+    if not job:
+        return
+
+    logs = job.setdefault("runtime_logs", [])
+    logs.append(line)
+    if len(logs) > RUNTIME_LOG_LIMIT:
+        del logs[:-RUNTIME_LOG_LIMIT]
+
+
+class _RuntimeLogMirrorHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+        except Exception:
+            return
+
+        # Mirror runtime logs to all active jobs so the frontend can render
+        # a terminal-like stream during orchestration.
+        for job_id, job in JOBS.items():
+            if job.get("status") in {"pending", "processing"}:
+                _append_runtime_log(job_id, line)
+
+
+def _install_runtime_log_mirror() -> None:
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if isinstance(handler, _RuntimeLogMirrorHandler):
+            return
+
+    handler = _RuntimeLogMirrorHandler(level=logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
+    root.addHandler(handler)
+
+
+_install_runtime_log_mirror()
 
 
 async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
@@ -101,6 +150,8 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         )
         job["model_verification"] = model_verification.model_dump()
         llm_enhanced = bool(req.use_gemini and config.USE_GEMINI and bool(config.GEMINI_API_KEY))
+        transition_intensity = (req.transition_intensity or "standard").lower()
+        transition_profile = (req.transition_profile or "auto").lower()
 
         trace_bridge = TraceBridge(job_id=job_id, article_url=req.article_url)
         job["_trace_bridge"] = trace_bridge
@@ -110,6 +161,8 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         workflow_overview["selected_model"] = model_verification.selected_model
         workflow_overview["model_verification_ok"] = model_verification.verification_ok
         workflow_overview["llm_enhanced"] = llm_enhanced
+        workflow_overview["transition_intensity"] = transition_intensity
+        workflow_overview["transition_profile"] = transition_profile
         job["workflow_overview"] = workflow_overview
 
         update(8, f"Model selected: {model_verification.selected_model}. Starting LangGraph execution...", "editor")
@@ -120,6 +173,8 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
                 "article_url": req.article_url,
                 "max_segments": int(req.max_segments or 6),
                 "use_gemini": bool(req.use_gemini),
+                "transition_intensity": transition_intensity,
+                "transition_profile": transition_profile,
                 "selected_model": model_verification.selected_model,
                 "gemini_api_key": config.GEMINI_API_KEY,
                 "retry_round": 0,
@@ -152,6 +207,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
         visuals = graph_state["visuals"]
         overall_headline = graph_state["overall_headline"]
         packaged_segments = graph_state["packaged_segments"]
+        render_review_payload = None
 
         target_runtime = segments_raw[-1]["end_time"] if segments_raw else 0
         set_agent_state(
@@ -242,6 +298,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             overall_headline,
             job_id,
         )
+        job["preview_video_url"] = f"/outputs/{job_id}/final_video.mp4"
         append_agent_output(job, "video_generation", "Final video", f"/outputs/{job_id}/final_video.mp4")
         record_trace_event(
             job,
@@ -271,6 +328,86 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             metrics={
                 "audio_clips": len(audio_paths),
                 "runtime_sec": round(target_runtime, 2),
+            },
+        )
+
+        update(92, "Running render QA checks for final media quality...", "render_review")
+        set_agent_state(
+            job,
+            "render_review",
+            status="running",
+            progress=35,
+            summary="Checking runtime fidelity, stream integrity, captions, and narration quality.",
+        )
+        set_agent_tools(
+            job,
+            "render_review",
+            [
+                "ffprobe",
+                "render quality rubric",
+                "gemini render critique",
+            ],
+        )
+        set_agent_input(
+            job,
+            "render_review",
+            {
+                "target_runtime_sec": target_runtime,
+                "segment_count": len(packaged_segments),
+                "transcript_cues": len(transcript_cues),
+            },
+        )
+        record_trace_event(
+            job,
+            "render_review",
+            "node_start",
+            "Started render QA review stage.",
+            input_payload={
+                "target_runtime_sec": target_runtime,
+                "segment_count": len(packaged_segments),
+                "transcript_cues": len(transcript_cues),
+            },
+            tools=["ffprobe", "render quality rubric", "gemini render critique"],
+        )
+
+        render_review_payload = await loop.run_in_executor(
+            None,
+            lambda: evaluate_render_quality(
+                video_path=final_video,
+                segments=packaged_segments,
+                transcript_cues=transcript_cues,
+                target_runtime_sec=target_runtime,
+                use_gemini=bool(req.use_gemini),
+                model_name=model_verification.selected_model,
+                api_key=config.GEMINI_API_KEY,
+            ),
+        )
+
+        append_agent_output(job, "render_review", "Render QA score", render_review_payload.get("overall_score", 0), kind="metric")
+        append_agent_output(job, "render_review", "Render QA summary", render_review_payload.get("summary", ""))
+        append_agent_output(job, "render_review", "Render QA report", render_review_payload, kind="json")
+        record_trace_event(
+            job,
+            "render_review",
+            "node_complete",
+            "Render QA review completed.",
+            output_payload={
+                "overall_score": render_review_payload.get("overall_score"),
+                "passed": render_review_payload.get("passed"),
+                "verdict": render_review_payload.get("verdict"),
+            },
+            decision="pass" if render_review_payload.get("passed") else "review",
+            route_to="finalize",
+        )
+        set_agent_state(
+            job,
+            "render_review",
+            status="done",
+            progress=100,
+            summary=render_review_payload.get("summary", "Render QA completed."),
+            metrics={
+                "overall_score": render_review_payload.get("overall_score", 0),
+                "passed": render_review_payload.get("passed", False),
             },
         )
 
@@ -307,6 +444,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             screenplay_text=graph_state["screenplay_text"],
             qa_score=qa_score,
             review=review,
+            render_review=(RenderQualityReview(**render_review_payload) if render_review_payload else None),
             workflow_overview=job.get("workflow_overview", {}),
             model_verification=model_verification,
             route_history=graph_state.get("route_history", []),
@@ -327,6 +465,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
             agents=[AgentTrace(**item) for item in snapshot_agents(job)],
             activity_log=job.get("activity_log", []),
             trace_events=[TraceEvent(**item) for item in snapshot_trace_events(job)],
+            runtime_logs=job.get("runtime_logs", []),
             model_verification=model_verification,
             video_path=str(final_video),
             video_url=f"/outputs/{job_id}/final_video.mp4",
@@ -382,6 +521,7 @@ async def _run_pipeline(job_id: str, req: GenerateRequest) -> None:
                     agents=[AgentTrace(**item) for item in snapshot_agents(job)],
                     activity_log=job.get("activity_log", []),
                     trace_events=[TraceEvent(**item) for item in snapshot_trace_events(job)],
+                    runtime_logs=job.get("runtime_logs", []),
                     model_verification=(
                         ModelVerification(**job["model_verification"])
                         if isinstance(job.get("model_verification"), dict)
@@ -414,15 +554,22 @@ async def generate(req: GenerateRequest, background_tasks: BackgroundTasks):
         "status": "pending",
         "progress": 0,
         "message": "Job queued...",
+        "preview_video_url": None,
         "result": None,
         "review": None,
         "model_verification": None,
         "agents": build_agent_state(),
         "activity_log": [],
         "trace_events": [],
+        "runtime_logs": [],
+        "last_status_poll_log_ts": 0.0,
         "workflow_overview": build_workflow_map(),
     }
     record_activity(JOBS[job_id], f"Job queued for {req.article_url}")
+    _append_runtime_log(
+        job_id,
+        f"{time.strftime('%H:%M:%S')} [INFO] main: Job queued for {req.article_url}",
+    )
 
     background_tasks.add_task(_run_pipeline, job_id, req)
 
@@ -437,18 +584,33 @@ async def generate(req: GenerateRequest, background_tasks: BackgroundTasks):
 
 
 @app.get("/status/{job_id}", response_model=JobStatusResponse)
-async def get_status(job_id: str):
+async def get_status(job_id: str, request: Request):
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
+
+    if job.get("status") in {"pending", "processing"}:
+        now = time.time()
+        last = float(job.get("last_status_poll_log_ts") or 0.0)
+        if now - last >= STATUS_POLL_LOG_INTERVAL_SEC:
+            host = request.client.host if request.client else "127.0.0.1"
+            port = request.client.port if request.client else 0
+            _append_runtime_log(
+                job_id,
+                f'INFO:     {host}:{port} - "GET /status/{job_id} HTTP/1.1" 200 OK',
+            )
+            job["last_status_poll_log_ts"] = now
+
     return JobStatusResponse(
         job_id=job_id,
         status=job["status"],
         progress=job["progress"],
         message=job["message"],
+        preview_video_url=job.get("preview_video_url"),
         agents=[AgentTrace(**item) for item in snapshot_agents(job)],
         activity_log=job.get("activity_log", []),
         trace_events=[TraceEvent(**item) for item in snapshot_trace_events(job)],
+        runtime_logs=job.get("runtime_logs", []),
         workflow_overview=job.get("workflow_overview", {}),
         review=job.get("review"),
         model_verification=job.get("model_verification"),

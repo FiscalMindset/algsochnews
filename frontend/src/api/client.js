@@ -10,11 +10,19 @@ const api = axios.create({
  * Submit a URL for video generation.
  * Returns { job_id }
  */
-export async function submitGenerate(articleUrl, useGemini = true, maxSegments = 7) {
+export async function submitGenerate(
+  articleUrl,
+  useGemini = true,
+  maxSegments = 7,
+  transitionIntensity = 'standard',
+  transitionProfile = 'auto'
+) {
   const res = await api.post('/generate', {
     article_url: articleUrl,
     use_gemini: useGemini,
     max_segments: maxSegments,
+    transition_intensity: transitionIntensity,
+    transition_profile: transitionProfile,
   })
   return res.data
 }

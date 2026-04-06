@@ -4,7 +4,7 @@ models.py — Pydantic schemas for request/response and broadcast workflow data.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,14 @@ class GenerateRequest(BaseModel):
         ge=4,
         le=12,
         description="Max number of screenplay/video segments including intro and close",
+    )
+    transition_intensity: Optional[Literal["subtle", "standard", "dramatic"]] = Field(
+        "standard",
+        description="Transition intensity profile for edit pacing and visual energy.",
+    )
+    transition_profile: Optional[Literal["auto", "general", "crisis", "sports", "politics"]] = Field(
+        "auto",
+        description="Story transition grammar profile. auto infers from article content.",
     )
 
 
@@ -129,6 +137,17 @@ class QAReview(BaseModel):
     next_actions: List[str] = Field(default_factory=list)
 
 
+class RenderQualityReview(BaseModel):
+    passed: bool
+    overall_score: float
+    summary: str = ""
+    verdict: str = "review"
+    strengths: List[str] = Field(default_factory=list)
+    issues: List[str] = Field(default_factory=list)
+    recommendations: List[str] = Field(default_factory=list)
+    telemetry: Dict[str, Any] = Field(default_factory=dict)
+
+
 class TranscriptCue(BaseModel):
     id: str
     segment_id: int
@@ -177,6 +196,8 @@ class Segment(BaseModel):
     source_image_url: Optional[str] = None
     ai_support_visual_prompt: Optional[str] = None
     transition: str
+    transition_profile: str = "general"
+    transition_intensity: str = "standard"
     story_beat: str = ""
     editorial_focus: str = ""
     lower_third: str = ""
@@ -232,6 +253,7 @@ class Script(BaseModel):
     screenplay_text: str
     qa_score: float
     review: Optional[QAReview] = None
+    render_review: Optional[RenderQualityReview] = None
     workflow_overview: Dict[str, Any] = Field(default_factory=dict)
     model_verification: Optional[ModelVerification] = None
     route_history: List[str] = Field(default_factory=list)
@@ -245,6 +267,7 @@ class GenerateResponse(BaseModel):
     agents: List[AgentTrace] = Field(default_factory=list)
     activity_log: List[str] = Field(default_factory=list)
     trace_events: List[TraceEvent] = Field(default_factory=list)
+    runtime_logs: List[str] = Field(default_factory=list)
     model_verification: Optional[ModelVerification] = None
     video_path: Optional[str] = None
     video_url: Optional[str] = None
@@ -257,9 +280,11 @@ class JobStatusResponse(BaseModel):
     status: str
     progress: int
     message: str
+    preview_video_url: Optional[str] = None
     agents: List[AgentTrace] = Field(default_factory=list)
     activity_log: List[str] = Field(default_factory=list)
     trace_events: List[TraceEvent] = Field(default_factory=list)
+    runtime_logs: List[str] = Field(default_factory=list)
     workflow_overview: Dict[str, Any] = Field(default_factory=dict)
     review: Optional[QAReview] = None
     model_verification: Optional[ModelVerification] = None

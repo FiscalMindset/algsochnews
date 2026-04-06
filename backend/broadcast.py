@@ -12,32 +12,191 @@ from backend.utils import sanitize_text
 
 
 TOP_TAGS = ["BREAKING", "LIVE", "DEVELOPING", "UPDATE", "LATEST", "ALERT"]
-TRANSITION_SEQUENCE = ["cut", "crossfade", "slide", "wipe", "push", "crossfade", "zoom", "cut"]
-INTRO_TRANSITIONS = ["crossfade", "slide", "wipe"]
+STORY_PROFILE_KEYWORDS = {
+    "crisis": {
+        "breaking", "blast", "attack", "fire", "flood", "quake", "crash", "evacuation",
+        "casualties", "deaths", "rescue", "emergency", "disaster", "hostage", "war",
+    },
+    "sports": {
+        "match", "tournament", "league", "goal", "final", "semifinal", "championship",
+        "athlete", "coach", "score", "penalty", "stadium", "innings", "wins",
+    },
+    "politics": {
+        "parliament", "senate", "cabinet", "minister", "election", "bill", "policy",
+        "government", "opposition", "campaign", "democracy", "voter", "party", "diplomatic",
+    },
+}
+
+TRANSITION_GRAMMAR = {
+    "general": {
+        "subtle": {
+            "intro": ["dissolve", "wipe_reveal"],
+            "body": ["hard_cut", "dissolve", "slide_left", "wipe_left"],
+            "penultimate": ["dissolve", "wipe_left"],
+            "outro": "dip_to_black",
+        },
+        "standard": {
+            "intro": ["wipe_reveal", "push_right", "dissolve", "slide_right"],
+            "body": ["hard_cut", "dissolve", "slide_left", "push_left", "wipe_left", "zoom_in", "slide_right", "push_right", "pixel_flow", "dissolve"],
+            "penultimate": ["dissolve", "push_left", "wipe_left", "zoom_in"],
+            "outro": "dip_to_black",
+        },
+        "dramatic": {
+            "intro": ["stinger", "wipe_reveal", "push_right", "dissolve"],
+            "body": ["hard_cut", "stinger", "slide_left", "push_left", "pixel_flow", "zoom_in", "dissolve"],
+            "penultimate": ["stinger", "zoom_in", "push_left"],
+            "outro": "dip_to_black",
+        },
+    },
+    "crisis": {
+        "subtle": {
+            "intro": ["wipe_reveal", "dissolve"],
+            "body": ["hard_cut", "dissolve", "wipe_left", "push_left"],
+            "penultimate": ["dissolve", "wipe_left"],
+            "outro": "dip_to_black",
+        },
+        "standard": {
+            "intro": ["wipe_reveal", "push_right", "dissolve"],
+            "body": ["hard_cut", "wipe_left", "push_left", "dissolve", "slide_left", "zoom_in"],
+            "penultimate": ["stinger", "push_left", "dissolve"],
+            "outro": "dip_to_black",
+        },
+        "dramatic": {
+            "intro": ["stinger", "wipe_reveal", "push_right"],
+            "body": ["hard_cut", "stinger", "push_left", "wipe_left", "zoom_in", "pixel_flow"],
+            "penultimate": ["stinger", "push_left", "zoom_in"],
+            "outro": "dip_to_black",
+        },
+    },
+    "sports": {
+        "subtle": {
+            "intro": ["slide_right", "dissolve"],
+            "body": ["slide_left", "push_left", "dissolve", "hard_cut"],
+            "penultimate": ["push_left", "dissolve"],
+            "outro": "dip_to_black",
+        },
+        "standard": {
+            "intro": ["slide_right", "push_right", "dissolve"],
+            "body": ["slide_left", "push_left", "zoom_in", "dissolve", "hard_cut", "slide_right"],
+            "penultimate": ["zoom_in", "push_left", "dissolve"],
+            "outro": "dip_to_black",
+        },
+        "dramatic": {
+            "intro": ["stinger", "slide_right", "push_right"],
+            "body": ["slide_left", "stinger", "push_left", "zoom_in", "pixel_flow", "hard_cut"],
+            "penultimate": ["stinger", "zoom_in", "push_left"],
+            "outro": "dip_to_black",
+        },
+    },
+    "politics": {
+        "subtle": {
+            "intro": ["dissolve", "wipe_reveal"],
+            "body": ["dissolve", "wipe_left", "push_left", "hard_cut"],
+            "penultimate": ["dissolve", "push_left"],
+            "outro": "dip_to_black",
+        },
+        "standard": {
+            "intro": ["wipe_reveal", "dissolve", "push_right"],
+            "body": ["dissolve", "wipe_left", "push_left", "slide_left", "hard_cut"],
+            "penultimate": ["push_left", "dissolve", "zoom_in"],
+            "outro": "dip_to_black",
+        },
+        "dramatic": {
+            "intro": ["stinger", "wipe_reveal", "dissolve"],
+            "body": ["dissolve", "stinger", "push_left", "wipe_left", "slide_left", "hard_cut"],
+            "penultimate": ["stinger", "push_left", "dissolve"],
+            "outro": "dip_to_black",
+        },
+    },
+}
 PREFERRED_HEADLINE_TOKENS = {
     "fire", "blaze", "engines", "fatalities", "casualties", "traffic",
     "police", "cause", "probe", "operations", "damage", "smoke",
     "market", "response", "investigators",
 }
+LOW_SIGNAL_RE = re.compile(
+    r"(this\s+article\s+is\s+about|for\s+the\s+.*\s+see)|"
+    r"(listen\s+to|watch\s+the\s+full|full\s+discussion|podcast|"
+    r"apple\s+podcasts?|spotify|youtube)",
+    re.IGNORECASE,
+)
 
 
-def _pick_transition(index: int, total: int, segment_type: str, previous: str | None) -> str:
-    if total <= 1 or index == total - 1 or segment_type == "outro":
-        return "fade_out"
+def _is_low_signal_sentence(text: str) -> bool:
+    cleaned = sanitize_text(text).strip()
+    if not cleaned:
+        return True
+    if LOW_SIGNAL_RE.search(cleaned):
+        return True
+    return len(cleaned.split()) < 4
+
+
+def _normalize_transition_intensity(value: str | None) -> str:
+    intensity = (value or "standard").strip().lower()
+    if intensity not in {"subtle", "standard", "dramatic"}:
+        return "standard"
+    return intensity
+
+
+def _normalize_transition_profile(value: str | None) -> str:
+    profile = (value or "auto").strip().lower()
+    if profile in {"auto", "general", "crisis", "sports", "politics"}:
+        return profile
+    return "auto"
+
+
+def _infer_story_profile(article_title: str, article_text: str, segments: Sequence[dict]) -> str:
+    corpus_parts = [article_title, article_text]
+    corpus_parts.extend(segment.get("text", "") for segment in segments[:4])
+    corpus = sanitize_text(" ".join(corpus_parts)).lower()
+    if not corpus:
+        return "general"
+
+    scores = {
+        profile: sum(corpus.count(keyword) for keyword in keywords)
+        for profile, keywords in STORY_PROFILE_KEYWORDS.items()
+    }
+    winner = max(scores, key=scores.get)
+    return winner if scores[winner] > 0 else "general"
+
+
+def _pick_transition(
+    index: int,
+    total: int,
+    segment_type: str,
+    previous: str | None,
+    transition_profile: str,
+    transition_intensity: str,
+) -> str:
+    if total <= 1:
+        return "hard_cut"
+
+    profile_grammar = TRANSITION_GRAMMAR.get(transition_profile, TRANSITION_GRAMMAR["general"])
+    grammar = profile_grammar.get(transition_intensity, profile_grammar["standard"])
+
+    if index == total - 1 or segment_type == "outro":
+        return grammar.get("outro", "dip_to_black")
 
     if segment_type == "intro":
-        pool = INTRO_TRANSITIONS
-        transition = pool[index % len(pool)]
+        pool = grammar.get("intro", ["dissolve"])
+    elif index == total - 2:
+        pool = grammar.get("penultimate", ["dissolve"])
     else:
-        transition = TRANSITION_SEQUENCE[max(0, index - 1) % len(TRANSITION_SEQUENCE)]
+        pool = grammar.get("body", ["dissolve"])
+
+    if transition_intensity == "dramatic" and "stinger" in pool:
+        major_marks = {1, max(1, total // 2)}
+        if index in major_marks and previous != "stinger":
+            return "stinger"
+
+    transition = pool[index % len(pool)]
 
     if transition == previous:
-        if segment_type == "intro":
-            pool = INTRO_TRANSITIONS
-        else:
-            pool = TRANSITION_SEQUENCE
         idx = pool.index(transition) if transition in pool else 0
         transition = pool[(idx + 1) % len(pool)]
+
+    if transition == previous:
+        transition = "dissolve"
 
     return transition
 
@@ -64,6 +223,9 @@ def _trim_trailing_stopwords(text: str) -> str:
 
 def _first_sentence(text: str) -> str:
     parts = re.split(r"(?<=[.!?])\s+", sanitize_text(text))
+    for part in parts:
+        if len(part.split()) >= 4 and not _is_low_signal_sentence(part):
+            return part.strip()
     for part in parts:
         if len(part.split()) >= 4:
             return part.strip()
@@ -137,6 +299,8 @@ def _facts_from_segment(text: str) -> List[str]:
     facts = []
     for chunk in re.split(r"(?<=[.!?])\s+|;\s+", sanitize_text(text)):
         chunk = chunk.strip()
+        if _is_low_signal_sentence(chunk):
+            continue
         if len(chunk.split()) >= 5:
             facts.append(_truncate_words(chunk, 14))
         if len(facts) == 3:
@@ -251,6 +415,8 @@ def generate_segment_copy(
     segments: Sequence[dict],
     article_title: str,
     article_text: str,
+    transition_intensity: str = "standard",
+    transition_profile: str = "auto",
 ) -> tuple[str, List[dict]]:
     """
     Return the overall program headline and per-segment copy metadata.
@@ -259,28 +425,36 @@ def generate_segment_copy(
     overall = generate_overall_headline(article_title, keywords)
     used = {overall}
 
+    resolved_intensity = _normalize_transition_intensity(transition_intensity)
+    requested_profile = _normalize_transition_profile(transition_profile)
+    resolved_profile = _infer_story_profile(article_title, article_text, segments) if requested_profile == "auto" else requested_profile
+
     packages = []
     total = len(segments)
     previous_transition: str | None = None
     for index, seg in enumerate(segments):
+        segment_text_for_copy = sanitize_text(seg["text"])
+        if _is_low_signal_sentence(segment_text_for_copy):
+            segment_text_for_copy = sanitize_text(article_title or segment_text_for_copy)
+
         if index == 0 and article_title:
             main_headline = _headline_case(_trim_trailing_stopwords(_truncate_words(article_title, 7).rstrip(".")))
         else:
-            rule_headline = _rule_based_headline(seg["text"], article_title, seg["segment_type"])
+            rule_headline = _rule_based_headline(segment_text_for_copy, article_title, seg["segment_type"])
             if rule_headline:
                 main_headline = rule_headline
             else:
-                seg_keywords = extract_keywords(seg["text"], top_n=10)
+                seg_keywords = extract_keywords(segment_text_for_copy, top_n=10)
                 preferred_bigrams = [
                     kw for kw in seg_keywords
                     if " " in kw and any(token in kw.split() for token in PREFERRED_HEADLINE_TOKENS)
                 ]
-                keyword_headline = preferred_bigrams[0] if preferred_bigrams else build_headline(seg["text"], keywords, set(used))
-                phrase_headline = _headline_phrase(seg["text"], 5)
+                keyword_headline = preferred_bigrams[0] if preferred_bigrams else build_headline(segment_text_for_copy, keywords, set(used))
+                phrase_headline = _headline_phrase(segment_text_for_copy, 5)
                 main_headline = phrase_headline if len(phrase_headline.split()) >= 3 else keyword_headline
             main_headline = _headline_case(_truncate_words(main_headline.replace(" — Update", " Update"), 6).rstrip("."))
         used.add(main_headline)
-        subheadline = _make_subheadline(seg["text"], main_headline)
+        subheadline = _make_subheadline(segment_text_for_copy, main_headline)
 
         if seg["segment_type"] == "intro":
             top_tag = "BREAKING"
@@ -289,9 +463,16 @@ def generate_segment_copy(
         else:
             top_tag = TOP_TAGS[min(index, len(TOP_TAGS) - 1)]
 
-        transition = _pick_transition(index, total, seg["segment_type"], previous_transition)
+        transition = _pick_transition(
+            index,
+            total,
+            seg["segment_type"],
+            previous_transition,
+            resolved_profile,
+            resolved_intensity,
+        )
         previous_transition = transition
-        facts = _facts_from_segment(seg["text"])
+        facts = _facts_from_segment(segment_text_for_copy)
         editorial_focus = _segment_focus(seg["segment_type"], index, total)
         lower_third = _make_lower_third(main_headline, subheadline)
         ticker_text = _make_ticker_text(main_headline, facts, seg["segment_type"])
@@ -304,6 +485,8 @@ def generate_segment_copy(
                 "top_tag": top_tag,
                 "transition": transition,
                 "story_beat": seg["segment_type"],
+                "transition_profile": resolved_profile,
+                "transition_intensity": resolved_intensity,
                 "editorial_focus": editorial_focus,
                 "lower_third": lower_third,
                 "ticker_text": ticker_text,
@@ -311,7 +494,7 @@ def generate_segment_copy(
                     f"Headline focuses on the strongest beat in segment {index + 1} "
                     f"and keeps on-screen copy short."
                 ),
-                "source_excerpt": _truncate_words(_first_sentence(seg["text"]), 18),
+                "source_excerpt": _truncate_words(_first_sentence(segment_text_for_copy), 18),
                 "factual_points": facts,
             }
         )

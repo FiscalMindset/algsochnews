@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { Captions, ChevronDown, ChevronUp, FileText, Mic, Rows3 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Captions, Check, ChevronDown, ChevronUp, Clipboard, FileText, Mic, Rows3 } from 'lucide-react'
 
 function SegmentCard({ segment, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -70,6 +70,7 @@ function SegmentCard({ segment, defaultOpen = false }) {
                 title={`frame-${segment.segment_id}`}
                 loading="lazy"
                 sandbox="allow-same-origin"
+                scrolling="no"
               />
             </div>
           )}
@@ -165,7 +166,9 @@ function SegmentCard({ segment, defaultOpen = false }) {
         }
         .script-frame-preview iframe {
           width: 100%;
-          height: 220px;
+          height: auto;
+          min-height: 220px;
+          aspect-ratio: 16 / 9;
           border: 1px solid rgba(255,255,255,0.1);
           border-radius: 12px;
           background: rgba(8,12,18,0.8);
@@ -203,10 +206,53 @@ function SegmentCard({ segment, defaultOpen = false }) {
   )
 }
 
-export default function ScriptPreview({ script }) {
+export default function ScriptPreview({ script, requestedView = null }) {
   const [viewMode, setViewMode] = useState('screenplay')
+  const [copyState, setCopyState] = useState('')
   const showJson = viewMode === 'json'
   const jsonPreview = useMemo(() => JSON.stringify(script, null, 2), [script])
+
+  useEffect(() => {
+    if (requestedView === 'json' || requestedView === 'screenplay') {
+      setViewMode(requestedView)
+      setCopyState('')
+    }
+  }, [requestedView])
+
+  async function copyText(text, label) {
+    if (!text) return
+
+    let copied = false
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        copied = true
+      }
+    } catch {
+      copied = false
+    }
+
+    if (!copied) {
+      try {
+        const temp = document.createElement('textarea')
+        temp.value = text
+        temp.setAttribute('readonly', 'true')
+        temp.style.position = 'absolute'
+        temp.style.left = '-9999px'
+        document.body.appendChild(temp)
+        temp.select()
+        copied = document.execCommand('copy')
+        document.body.removeChild(temp)
+      } catch {
+        copied = false
+      }
+    }
+
+    if (copied) {
+      setCopyState(label)
+      window.setTimeout(() => setCopyState(''), 1400)
+    }
+  }
 
   if (!script) return null
 
@@ -220,20 +266,15 @@ export default function ScriptPreview({ script }) {
             <h2>{script.source_title}</h2>
           </div>
         </div>
-        <div className="preview-toggle">
+        <div className="script-head-actions">
+          <span className="view-indicator">Showing: {showJson ? 'JSON' : 'Screenplay'}</span>
           <button
             type="button"
-            className={`json-toggle ${viewMode === 'screenplay' ? 'json-toggle--active' : ''}`}
-            onClick={() => setViewMode('screenplay')}
+            className="copy-btn"
+            onClick={() => copyText(showJson ? jsonPreview : script.screenplay_text, showJson ? 'JSON copied' : 'Screenplay copied')}
           >
-            Screenplay
-          </button>
-          <button
-            type="button"
-            className={`json-toggle ${viewMode === 'json' ? 'json-toggle--active' : ''}`}
-            onClick={() => setViewMode('json')}
-          >
-            JSON
+            {copyState ? <Check size={14} /> : <Clipboard size={14} />}
+            {copyState || `Copy ${showJson ? 'JSON' : 'screenplay'}`}
           </button>
         </div>
       </div>
@@ -258,9 +299,14 @@ export default function ScriptPreview({ script }) {
           <div className="extraction-attempts">
             {script.article.extraction_attempts.map((attempt, idx) => (
               <div key={`${attempt.method}-${idx}`} className="extraction-attempt">
-                <strong>{attempt.method}</strong>
-                <span className={`attempt-status attempt-status--${attempt.status}`}>{attempt.status}</span>
+                <div className="attempt-head">
+                  <strong>{attempt.method}</strong>
+                  <span className={`attempt-status attempt-status--${attempt.status}`}>{attempt.status}</span>
+                </div>
                 <p>{attempt.reason}</p>
+                {attempt.status === 'failed' && (
+                  <p className="attempt-note">Non-blocking: fallback extractor output was used for the final package.</p>
+                )}
                 {attempt.preview_excerpt && <p><em>{attempt.preview_excerpt}</em></p>}
               </div>
             ))}
@@ -268,14 +314,40 @@ export default function ScriptPreview({ script }) {
         </div>
       )}
 
+      {script.render_review && (
+        <div className="screenplay-block">
+          <div className="script-block-title">Render quality review</div>
+          <div className="script-shell-meta">
+            <span>Verdict: {script.render_review.verdict}</span>
+            <span>Score: {script.render_review.overall_score}/5</span>
+            <span>Status: {script.render_review.passed ? 'pass' : 'review'}</span>
+          </div>
+          {script.render_review.summary && <p className="render-summary">{script.render_review.summary}</p>}
+          {script.render_review.issues?.length > 0 && (
+            <div className="render-list">
+              {script.render_review.issues.map((issue, index) => (
+                <div key={`render-issue-${index}`} className="render-item render-item--issue">{issue}</div>
+              ))}
+            </div>
+          )}
+          {script.render_review.recommendations?.length > 0 && (
+            <div className="render-list">
+              {script.render_review.recommendations.map((rec, index) => (
+                <div key={`render-rec-${index}`} className="render-item render-item--rec">{rec}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {showJson && (
-        <div className="json-block">
+        <div id="script-json-block" className="json-block">
           <div className="script-block-title">Structured JSON (screenplay remains visible below)</div>
           <pre>{jsonPreview}</pre>
         </div>
       )}
 
-      <div className="screenplay-block">
+      <div id="script-screenplay-block" className="screenplay-block">
         <div className="script-block-title">Human-readable screenplay</div>
         <pre>{script.screenplay_text}</pre>
       </div>
@@ -350,19 +422,38 @@ export default function ScriptPreview({ script }) {
           font-size: 24px;
           line-height: 1.2;
         }
-        .json-toggle {
-          border: 1px solid rgba(59,130,246,0.3);
-          background: rgba(59,130,246,0.1);
-          color: #bfdbfe;
+        .script-head-actions {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .view-indicator {
+          font-size: 11px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.58);
+          border: 1px solid rgba(255,255,255,0.1);
+          background: rgba(255,255,255,0.04);
+          border-radius: 999px;
+          padding: 9px 12px;
+        }
+        .copy-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          border: 1px solid rgba(16,185,129,0.38);
+          background: rgba(16,185,129,0.12);
+          color: #bbf7d0;
           border-radius: 999px;
           padding: 10px 14px;
           cursor: pointer;
           font-weight: 700;
+          border-color: rgba(16,185,129,0.38);
         }
-        .preview-toggle {
-          display: inline-flex;
-          gap: 8px;
-          flex-wrap: wrap;
+        .copy-btn:hover {
+          border-color: rgba(16,185,129,0.58);
+          background: rgba(16,185,129,0.2);
         }
         .json-toggle--active {
           background: rgba(239,68,68,0.14);
@@ -470,15 +561,32 @@ export default function ScriptPreview({ script }) {
           font-size: 12px;
           line-height: 1.6;
           color: rgba(255,255,255,0.78);
+          min-width: 0;
+        }
+        .attempt-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .extraction-attempt strong,
+        .extraction-attempt p,
+        .extraction-attempt em {
+          overflow-wrap: anywhere;
+          word-break: break-word;
         }
         .attempt-status {
+          display: inline-flex;
           width: fit-content;
+          max-width: 100%;
           font-size: 10px;
           letter-spacing: 0.1em;
           text-transform: uppercase;
           border-radius: 999px;
           padding: 4px 8px;
           border: 1px solid rgba(255,255,255,0.12);
+          white-space: normal;
         }
         .attempt-status--accepted {
           color: #6ee7b7;
@@ -489,6 +597,44 @@ export default function ScriptPreview({ script }) {
           color: #fca5a5;
           border-color: rgba(239,68,68,0.45);
           background: rgba(239,68,68,0.12);
+        }
+        .attempt-note {
+          color: #bfdbfe;
+          background: rgba(59,130,246,0.12);
+          border: 1px solid rgba(59,130,246,0.24);
+          border-radius: 10px;
+          padding: 6px 8px;
+          font-size: 11px;
+          line-height: 1.55;
+        }
+        .render-summary {
+          margin: 12px 0 0;
+          color: rgba(255,255,255,0.8);
+          font-size: 13px;
+          line-height: 1.65;
+        }
+        .render-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          margin-top: 12px;
+        }
+        .render-item {
+          font-size: 12px;
+          line-height: 1.6;
+          border-radius: 10px;
+          padding: 8px 10px;
+          overflow-wrap: anywhere;
+        }
+        .render-item--issue {
+          color: #fecaca;
+          border: 1px solid rgba(239,68,68,0.3);
+          background: rgba(239,68,68,0.1);
+        }
+        .render-item--rec {
+          color: #dbeafe;
+          border: 1px solid rgba(59,130,246,0.24);
+          background: rgba(59,130,246,0.1);
         }
         @media (max-width: 860px) {
           .script-side-grid {

@@ -4,6 +4,7 @@ transcript_alignment.py - Transcript cue alignment with ASR-ready extension poin
 
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional, Sequence
 
 from backend.broadcast import seconds_to_timecode
@@ -21,6 +22,48 @@ class TranscriptAligner:
 
     def __init__(self, mode: str = "paced"):
         self.mode = mode
+
+    @staticmethod
+    def _word_count(text: str) -> int:
+        return len(re.findall(r"[A-Za-z0-9']+", text))
+
+    @staticmethod
+    def _split_caption_chunks(text: str, max_words: int = 8) -> List[str]:
+        cleaned = sanitize_text(text).strip()
+        if not cleaned:
+            return []
+
+        sentence_parts = [
+            part.strip()
+            for part in re.findall(r"[^.!?]+[.!?]?", cleaned)
+            if part and part.strip()
+        ]
+
+        chunks: List[str] = []
+        for sentence in sentence_parts:
+            end_mark = sentence[-1] if sentence and sentence[-1] in ".!?" else ""
+            core = sentence[:-1].strip() if end_mark else sentence
+            words = core.split()
+            if not words:
+                continue
+
+            for start in range(0, len(words), max_words):
+                part_words = words[start:start + max_words]
+                chunk = " ".join(part_words)
+                if start + max_words >= len(words) and end_mark:
+                    chunk = f"{chunk}{end_mark}"
+                chunks.append(chunk)
+
+        return chunks or [cleaned]
+
+    @staticmethod
+    def _pause_weight(chunk: str) -> float:
+        tail = chunk.strip()[-1:] if chunk.strip() else ""
+        if tail in {".", "?", "!"}:
+            return 0.16
+        if tail in {",", ";", ":"}:
+            return 0.08
+        return 0.0
 
     def align(
         self,
@@ -49,19 +92,30 @@ class TranscriptAligner:
 
             if audio_durations and idx < len(audio_durations):
                 audio_duration = float(audio_durations[idx])
-                segment_duration = max(0.8, min(segment_duration, audio_duration + 0.6))
+                segment_duration = max(0.8, min(segment_duration, audio_duration + 0.35))
 
-            words = narration.split()
-            chunk_size = 7
-            chunks = [" ".join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
-            total_words = max(len(words), 1)
+            chunks = self._split_caption_chunks(narration, max_words=8)
+            total_words = max(self._word_count(narration), 1)
+
+            # Keep cue pacing close to spoken cadence instead of fixed-size slices.
+            spoken_wps = max(2.0, min(5.0, total_words / max(segment_duration, 0.8)))
+            weighted_durations: List[float] = []
+            for chunk in chunks:
+                chunk_words = max(self._word_count(chunk), 1)
+                base = chunk_words / spoken_wps
+                bounded = max(0.55, min(3.2, base))
+                weighted_durations.append(bounded + self._pause_weight(chunk))
+
+            total_weight = max(sum(weighted_durations), 0.01)
+            scale = segment_duration / total_weight
 
             cursor = start
-            for chunk_idx, chunk in enumerate(chunks, start=1):
-                chunk_words = max(len(chunk.split()), 1)
-                ratio = chunk_words / total_words
-                chunk_dur = max(0.9, round(segment_duration * ratio, 2))
+            for chunk_idx, (chunk, weight) in enumerate(zip(chunks, weighted_durations), start=1):
+                chunk_dur = max(0.45, round(weight * scale, 2))
                 chunk_end = round(min(end, cursor + chunk_dur), 2)
+
+                if chunk_end <= cursor:
+                    chunk_end = round(min(end, cursor + 0.45), 2)
 
                 cues.append(
                     {

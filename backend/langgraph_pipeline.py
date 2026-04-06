@@ -32,7 +32,7 @@ from backend.narration import generate_narrations
 from backend.qa import review_broadcast_package
 from backend.scraper import scrape_article
 from backend.segmenter import segment_article
-from backend.utils import config, estimate_duration, sanitize_text
+from backend.utils import config, estimate_duration, get_logger, sanitize_text
 from backend.visual_planner import plan_visuals, prepare_source_images
 from backend.workflow import (
     append_agent_output,
@@ -44,11 +44,15 @@ from backend.workflow import (
     set_agent_tools,
 )
 
+log = get_logger("pipeline")
+
 
 class GraphState(TypedDict):
     article_url: str
     max_segments: int
     use_gemini: bool
+    transition_intensity: str
+    transition_profile: str
     selected_model: str
     gemini_api_key: str
     retry_round: int
@@ -215,6 +219,12 @@ def _tighten_packaging(segment: dict) -> dict:
 _INSTRUCTION_PATTERNS = [
     r"^state\b",
     r"^shift\b",
+    r"^let\b",
+    r"^deliver\b",
+    r"^read\b",
+    r"^speak\b",
+    r"^start\b",
+    r"^end\b",
     r"^emphasize\b",
     r"^convey\b",
     r"^stress\b",
@@ -226,26 +236,88 @@ _INSTRUCTION_PATTERNS = [
     r"^mention\b",
     r"^use\b",
     r"^keep\b",
+    r"^ensure\b",
+    r"^avoid\b",
+    r"^make sure\b",
+    r"^pace\b",
+    r"^replace\b",
+    r"^cover\b",
+    r"^bridge\b",
     r"\bphrase\b",
     r"\btone\b",
+    r"\bcamera\b",
+    r"\bcontrol room\b",
+    r"\bsegment\b",
+    r"\bvoice-over\b",
+    r"\bvoice over\b",
+    r"\bwith\s+a\s+\w+\s+tone\b",
+    r"\bstress\s+the\s+words?\b",
+    r"\bread\s+the\s+question\b",
 ]
+_LOW_SIGNAL_SENTENCE_RE = re.compile(
+    r"(this\s+article\s+is\s+about|for\s+the\s+.*\s+see|image\s+credit|photo\s+of)|"
+    r"(listen\s+to|watch\s+our\s+report|watch\s+the\s+full|full\s+discussion|podcast|"
+    r"apple\s+podcasts?|spotify|youtube|click\s+here|support\s+us|"
+    r"write\s+to\s+us|send\s+your\s+thoughts|quick\s+feedback\s+form)",
+    re.IGNORECASE,
+)
+_PROMO_FRAGMENT_RE = re.compile(
+    r"(elections\s+in\s+\w+|reports\s+from\s+the\s+ground\s+that\s+are\s+in\s+the\s+public\s+interest|"
+    r"newslaundry\s+and\s+the\s+news\s+minute)",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_editor_instruction(text: str) -> bool:
     compact = sanitize_text(text).strip().lower()
     if not compact:
         return False
-    return any(re.search(pattern, compact) for pattern in _INSTRUCTION_PATTERNS)
+    if any(re.search(pattern, compact) for pattern in _INSTRUCTION_PATTERNS):
+        return True
+    if compact.startswith("please ") and any(
+        compact[7:].startswith(prefix)
+        for prefix in ("use ", "keep ", "shift ", "deliver ", "read ", "speak ", "focus ", "highlight ")
+    ):
+        return True
+    return False
+
+
+def _token_set(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-zA-Z]{3,}", sanitize_text(text).lower())}
+
+
+def _grounding_ratio(narration: str, source_text: str) -> float:
+    narration_tokens = _token_set(narration)
+    if not narration_tokens:
+        return 0.0
+    source_tokens = _token_set(source_text)
+    return len(narration_tokens & source_tokens) / max(len(narration_tokens), 1)
 
 
 def _fallback_narration_from_segment(segment: dict) -> str:
     segment_type = segment.get("segment_type", "body")
-    source = _truncate_words(sanitize_text(segment.get("text", "")), 30)
-    if not source:
-        source = _truncate_words(sanitize_text(segment.get("headline", "")), 18)
+    source_text = sanitize_text(segment.get("text", ""))
+    source_sentences = []
+    for raw in re.split(r"(?<=[.!?])\s+", source_text):
+        sentence = re.sub(r"^(?:\d+\s+){1,4}", "", raw.strip()).strip()
+        if len(sentence.split()) < 6:
+            continue
+        if _looks_like_editor_instruction(sentence):
+            continue
+        if _LOW_SIGNAL_SENTENCE_RE.search(sentence):
+            continue
+        if _PROMO_FRAGMENT_RE.search(sentence):
+            continue
+        if len(re.findall(r"\d", sentence)) > max(3, len(sentence) // 20):
+            continue
+        source_sentences.append(sentence)
+    source = _truncate_words(source_sentences[0] if source_sentences else source_text, 30)
+    if not source or len(source.split()) < 5:
+        headline_fallback = _truncate_words(sanitize_text(segment.get("headline", "")), 18)
+        source = headline_fallback or "the latest verified development in this story"
 
     if segment_type == "intro":
-        return f"Tonight: {source}" if source else "Tonight, we bring you the latest verified update."
+        return f"Tonight: {source}." if source else "Tonight, we bring you the latest verified update."
     if segment_type == "outro":
         return "That is the latest for now. We will continue tracking developments and bring you more verified updates."
     return source or "Here is the latest verified development in this story."
@@ -255,6 +327,17 @@ def _normalize_narrations(segments: Sequence[dict], narrations: Sequence[str]) -
     normalized: List[str] = []
     for segment, narration in zip(segments, narrations):
         clean = sanitize_text(narration)
+        weak_grounding = _grounding_ratio(clean, segment.get("text", "")) < 0.18
+        promotional_meta = bool(re.search(r"\b(spotify|apple|youtube|podcast|full discussion)\b", clean, flags=re.IGNORECASE))
+        cta_meta = bool(
+            re.search(
+                r"\b(click here|join\s+.*\s+channel|whatsapp channel|support us|write to us|send your thoughts|quick feedback form)\b",
+                clean,
+                flags=re.IGNORECASE,
+            )
+        )
+        if _looks_like_editor_instruction(clean) or weak_grounding or promotional_meta or cta_meta:
+            clean = _fallback_narration_from_segment(segment)
         if _looks_like_editor_instruction(clean):
             clean = _fallback_narration_from_segment(segment)
         normalized.append(clean)
@@ -266,6 +349,8 @@ def _passthrough(state: GraphState) -> Dict[str, Any]:
         "article_url",
         "max_segments",
         "use_gemini",
+        "transition_intensity",
+        "transition_profile",
         "selected_model",
         "gemini_api_key",
         "retry_round",
@@ -299,6 +384,30 @@ async def _node_extraction(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, 
     )
 
     article_raw = await loop.run_in_executor(None, scrape_article, article_url)
+
+    selected_method = article_raw.get("method", "unknown")
+    selected_score = float(article_raw.get("extraction_score") or 0.0)
+    selected_words = int(article_raw.get("word_count") or 0)
+    candidates = article_raw.get("candidates", []) or []
+    attempts = article_raw.get("extraction_attempts", []) or []
+
+    log.info(
+        "[extraction] selected=%s score=%.4f words=%s candidates=%s attempts=%s",
+        selected_method,
+        selected_score,
+        selected_words,
+        len(candidates),
+        len(attempts),
+    )
+    for candidate in candidates[:6]:
+        log.info(
+            "[extraction] candidate method=%s status=%s score=%.4f words=%s selector=%s",
+            candidate.get("method", "unknown"),
+            candidate.get("status", "accepted"),
+            float(candidate.get("score") or 0.0),
+            int(candidate.get("word_count") or 0),
+            candidate.get("selector_used", ""),
+        )
 
     record_trace_event(
         job,
@@ -486,6 +595,8 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
     selected_model = state["selected_model"]
     gemini_api_key = state.get("gemini_api_key", "")
     use_gemini = bool(state.get("use_gemini", True))
+    transition_intensity = str(state.get("transition_intensity", "standard"))
+    transition_profile = str(state.get("transition_profile", "auto"))
     job_id = ctx["job_id"]
 
     set_agent_state(
@@ -504,6 +615,8 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
         {
             "segment_count": len(segments_raw),
             "source_images": len(article_raw.get("images", [])),
+            "transition_intensity": transition_intensity,
+            "transition_profile": transition_profile,
         },
     )
 
@@ -525,6 +638,8 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
         segments_raw,
         article_raw.get("title", ""),
         article_raw["text"],
+        transition_intensity,
+        transition_profile,
     )
     source_future = loop.run_in_executor(
         None,
@@ -579,6 +694,9 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
     append_agent_output(job, "packaging", "Overall headline", overall_headline)
     append_agent_output(job, "packaging", "Transitions", [item["transition"] for item in packaged_segments], kind="list")
     append_agent_output(job, "packaging", "Camera motions", [item["camera_motion"] for item in packaged_segments], kind="list")
+    if packaged_segments:
+        append_agent_output(job, "packaging", "Transition profile", packaged_segments[0].get("transition_profile", "general"))
+        append_agent_output(job, "packaging", "Transition intensity", packaged_segments[0].get("transition_intensity", "standard"))
 
     record_trace_event(
         job,
@@ -591,6 +709,8 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
             "overall_headline": overall_headline,
             "source_visuals": sum(1 for item in packaged_segments if item.get("source_visual_used")),
             "ai_support_visuals": sum(1 for item in packaged_segments if item.get("ai_support_visual_prompt")),
+            "transition_profile": packaged_segments[0].get("transition_profile", "general") if packaged_segments else "general",
+            "transition_intensity": packaged_segments[0].get("transition_intensity", "standard") if packaged_segments else "standard",
             "llm_overrides": bool(llm_packaging_overrides),
         },
         decision="route_to_review",
@@ -700,6 +820,32 @@ async def _node_review(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
     append_agent_output(job, "review", "QA average", review.overall_average, kind="metric")
     append_agent_output(job, "review", "Retry decision", review.retry_decision)
     append_agent_output(job, "review", "Criteria", [item.model_dump() for item in review.criteria], kind="table")
+
+    route_preview_state = cast(GraphState, {**state, "review": review, "weak_segments": weak_segments})
+    effective_route = _route_from_review(route_preview_state)
+    append_agent_output(
+        job,
+        "review",
+        "Retry routing",
+        {
+            "requested_decision": review.retry_decision,
+            "effective_route": effective_route,
+            "passed": review.passed,
+            "retry_round": retry_round,
+            "max_retries": config.MAX_RETRIES,
+            "weak_segments": weak_segments,
+        },
+        kind="json",
+    )
+    log.info(
+        "[review] avg=%.2f passed=%s decision=%s effective_route=%s retry_round=%s/%s",
+        review.overall_average,
+        review.passed,
+        review.retry_decision,
+        effective_route,
+        retry_round,
+        config.MAX_RETRIES,
+    )
 
     route_history = list(state.get("route_history", []))
     route_history.append(f"review:{review.retry_decision}")
@@ -901,18 +1047,20 @@ def _route_from_review(state: GraphState) -> str:
         return "finalize"
 
     retry_round = int(state.get("retry_round", 0))
-    if review.passed:
-        return "finalize"
     if retry_round >= config.MAX_RETRIES:
         return "finalize"
 
-    decision = review.retry_decision
+    decision = (review.retry_decision or "finalize").strip()
     if decision == "retry_editor":
         return "retry_editor"
     if decision == "retry_packaging":
         return "retry_packaging"
     if decision == "retry_editor_and_packaging":
         return "retry_both"
+
+    if review.passed:
+        return "finalize"
+
     return "finalize"
 
 

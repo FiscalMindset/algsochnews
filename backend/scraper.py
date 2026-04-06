@@ -27,11 +27,49 @@ JUNK_LINE_RE = re.compile(
     r"(cookie|subscribe|newsletter|sign in|advertis|privacy policy|terms of use|all rights reserved)",
     re.IGNORECASE,
 )
+PROMOTIONAL_LINE_RE = re.compile(
+    r"(listen\s+to|watch\s+the\s+full|full\s+discussion|podcast|episode\s+\d+|"
+    r"apple\s+podcasts?|spotify|youtube|follow\s+us|join\s+our\s+channel|"
+    r"read\s+more\s+at|download\s+our\s+app|click\s+here|"
+    r"whatsapp\s+channel|support\s+us|reporting\s+fund|write\s+to\s+us|"
+    r"send\s+your\s+thoughts|quick\s+feedback\s+form)",
+    re.IGNORECASE,
+)
+BOILERPLATE_OPENERS_RE = re.compile(
+    r"(this\s+article\s+is\s+about|for\s+the\s+.*\s+see|photo\s+of|image\s+credit)",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
 # Individual extractors
 # ---------------------------------------------------------------------------
+
+
+def _looks_promotional(chunk: str) -> bool:
+    lower = chunk.lower().strip()
+    if not lower:
+        return False
+    if not PROMOTIONAL_LINE_RE.search(lower):
+        return False
+
+    # Promotional lines are usually short CTA statements, not factual reporting.
+    token_count = len(lower.split())
+    return token_count <= 48
+
+
+def _looks_boilerplate(chunk: str) -> bool:
+    lower = chunk.lower().strip()
+    if not lower:
+        return False
+
+    if BOILERPLATE_OPENERS_RE.search(lower):
+        return True
+
+    if lower.startswith("for the ") and " see " in lower:
+        return True
+
+    return False
 
 
 def _clean_article_text_with_meta(text: str) -> Tuple[str, dict]:
@@ -50,6 +88,14 @@ def _clean_article_text_with_meta(text: str) -> Tuple[str, dict]:
                 dropped_samples.append(chunk)
             continue
         if JUNK_LINE_RE.search(chunk):
+            if len(dropped_samples) < 3:
+                dropped_samples.append(chunk)
+            continue
+        if _looks_promotional(chunk):
+            if len(dropped_samples) < 3:
+                dropped_samples.append(chunk)
+            continue
+        if _looks_boilerplate(chunk):
             if len(dropped_samples) < 3:
                 dropped_samples.append(chunk)
             continue

@@ -9,11 +9,65 @@ from backend.utils import get_logger, chunk_text, estimate_duration, word_count,
 
 log = get_logger("segmenter")
 
+PROMOTIONAL_SENTENCE_RE = re.compile(
+    r"(listen\s+to|watch\s+the\s+full|full\s+discussion|podcast|episode\s+\d+|"
+    r"apple\s+podcasts?|spotify|youtube|follow\s+us|subscribe|download\s+our\s+app|"
+    r"click\s+here|join\s+.*\s+channel|whatsapp\s+channel|support\s+us|"
+    r"write\s+to\s+us|send\s+your\s+thoughts|quick\s+feedback\s+form)",
+    re.IGNORECASE,
+)
+BOILERPLATE_SENTENCE_RE = re.compile(
+    r"^(this\s+article\s+is\s+about|for\s+the\s+.*\s+see|image\s+credit|photo\s+of)",
+    re.IGNORECASE,
+)
+INSTRUCTIONAL_SENTENCE_RE = re.compile(
+    r"^(?:please\s+)?(?:use\s+(?!of\b)|keep\b|shift\b|deliver\b|read\b|speak\b|"
+    r"stress\b|emphasize\b|highlight\b|focus\b|mention\b|frame\b|convey\b|"
+    r"ensure\b|avoid\b|make\s+sure\b|let\b)|"
+    r"\b(read\s+the\s+question|stress\s+the\s+words?|with\s+a\s+\w+\s+tone|"
+    r"voice[-\s]?over\b|anchor\s+should\b|control\s+room\b)\b",
+    re.IGNORECASE,
+)
+
 
 def _split_into_sentences(text: str) -> List[str]:
     """Split text on sentence boundaries, preserving punctuation."""
     sentences = re.split(r"(?<=[.!?])\s+", text)
     return [s.strip() for s in sentences if len(s.strip()) > 15]
+
+
+def _is_low_signal_sentence(sentence: str) -> bool:
+    lowered = sentence.strip().lower()
+    if not lowered:
+        return True
+
+    if INSTRUCTIONAL_SENTENCE_RE.search(lowered):
+        return True
+
+    if BOILERPLATE_SENTENCE_RE.search(lowered):
+        return True
+
+    if PROMOTIONAL_SENTENCE_RE.search(lowered) and len(lowered.split()) <= 48:
+        return True
+
+    return False
+
+
+def _filter_sentences(sentences: List[str]) -> List[str]:
+    filtered: List[str] = []
+    seen = set()
+    for sentence in sentences:
+        normalized = re.sub(r"\s+", " ", sentence).strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        if _is_low_signal_sentence(normalized):
+            continue
+        filtered.append(normalized)
+        seen.add(key)
+    return filtered
 
 
 def _group_sentences(sentences: List[str], target_words: int = 50) -> List[str]:
@@ -52,6 +106,7 @@ def segment_article(
     log.info(f"Segmenting article ({word_count(text)} words, max={max_segments} segs)")
 
     sentences = _split_into_sentences(text)
+    sentences = _filter_sentences(sentences)
     if not sentences:
         raise ValueError("Article too short or malformed — cannot segment.")
 

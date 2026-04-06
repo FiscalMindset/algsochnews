@@ -133,6 +133,7 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
                   title={`frame-${segment.segment_id}`}
                   loading="lazy"
                   sandbox="allow-same-origin"
+                  scrolling="no"
                 />
               ) : segment.scene_image_url ? (
                 <img src={segment.scene_image_url} alt={segment.main_headline} />
@@ -409,7 +410,9 @@ export default function TimelineView({ segments = [], totalDuration = 0, current
         }
         .timeline-card-media {
           background: rgba(255,255,255,0.04);
-          min-height: 170px;
+          aspect-ratio: 16 / 9;
+          min-height: 0;
+          overflow: hidden;
         }
         .timeline-card-media img {
           width: 100%;

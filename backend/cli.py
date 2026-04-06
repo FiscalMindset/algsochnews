@@ -10,6 +10,7 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 import time
@@ -90,6 +91,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
         "article_url": args.url,
         "use_gemini": args.use_gemini,
         "max_segments": args.max_segments,
+        "transition_intensity": args.transition_intensity,
+        "transition_profile": args.transition_profile,
     }
 
     response = requests.post(generate_url, json=payload, timeout=args.timeout)
@@ -143,6 +146,75 @@ def cmd_generate(args: argparse.Namespace) -> int:
     return 0 if status == "done" else 1
 
 
+def cmd_local_generate(args: argparse.Namespace) -> int:
+    from backend.main import JOBS, _append_runtime_log, _run_pipeline
+    from backend.models import GenerateRequest
+    from backend.utils import generate_job_id
+    from backend.workflow import build_agent_state, build_workflow_map
+
+    job_id = args.job_id or generate_job_id()
+    JOBS[job_id] = {
+        "status": "pending",
+        "progress": 0,
+        "message": "Job queued...",
+        "result": None,
+        "review": None,
+        "model_verification": None,
+        "agents": build_agent_state(),
+        "activity_log": [],
+        "trace_events": [],
+        "runtime_logs": [],
+        "last_status_poll_log_ts": 0.0,
+        "workflow_overview": build_workflow_map(),
+    }
+    _append_runtime_log(job_id, f"{time.strftime('%H:%M:%S')} [INFO] main: Local job queued for {args.url}")
+
+    req = GenerateRequest(
+        article_url=args.url,
+        use_gemini=args.use_gemini,
+        max_segments=args.max_segments,
+        transition_intensity=args.transition_intensity,
+        transition_profile=args.transition_profile,
+    )
+
+    print(_pretty({
+        "mode": "local",
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Starting in-process pipeline run",
+    }))
+
+    asyncio.run(_run_pipeline(job_id, req))
+
+    payload = JOBS.get(job_id, {})
+    status = payload.get("status", "failed")
+    result = payload.get("result") or {}
+    review = payload.get("review") or {}
+    runtime_logs = payload.get("runtime_logs") or []
+
+    summary = {
+        "mode": "local",
+        "job_id": job_id,
+        "status": status,
+        "selected_model": ((payload.get("model_verification") or {}).get("selected_model")),
+        "qa_average": review.get("overall_average"),
+        "retry_decision": review.get("retry_decision"),
+        "retry_rounds": review.get("retry_rounds"),
+        "video_url": result.get("video_url"),
+        "video_path": result.get("video_path"),
+        "script_path": f"outputs/{job_id}/script.json",
+        "runtime_log_lines": len(runtime_logs),
+    }
+    print(_pretty(summary))
+
+    if args.show_runtime_logs and runtime_logs:
+        print("\n--- runtime logs ---")
+        for line in runtime_logs:
+            print(line)
+
+    return 0 if status == "done" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Algsoch News CLI")
 
@@ -166,12 +238,52 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(generate)
     generate.add_argument("--url", required=True, help="Public article URL")
     generate.add_argument("--max-segments", type=int, default=6, help="Max segments (4 to 12)")
+    generate.add_argument(
+        "--transition-intensity",
+        choices=["subtle", "standard", "dramatic"],
+        default="standard",
+        help="Transition pacing intensity",
+    )
+    generate.add_argument(
+        "--transition-profile",
+        choices=["auto", "general", "crisis", "sports", "politics"],
+        default="auto",
+        help="Transition grammar profile",
+    )
     generate.add_argument("--use-gemini", action="store_true", default=True, help="Enable Gemini refinement")
     generate.add_argument("--no-gemini", action="store_false", dest="use_gemini", help="Disable Gemini")
     generate.add_argument("--wait", action="store_true", help="Poll until completion")
     generate.add_argument("--interval", type=float, default=2.0, help="Polling interval in seconds")
     generate.add_argument("--wait-timeout", type=int, default=900, help="Max wait time in seconds")
     generate.set_defaults(func=cmd_generate)
+
+    local_generate = sub.add_parser(
+        "local-generate",
+        help="Run pipeline locally in-process (no API server required)",
+    )
+    local_generate.add_argument("--url", required=True, help="Public article URL")
+    local_generate.add_argument("--job-id", default="", help="Optional explicit job ID")
+    local_generate.add_argument("--max-segments", type=int, default=6, help="Max segments (4 to 12)")
+    local_generate.add_argument(
+        "--transition-intensity",
+        choices=["subtle", "standard", "dramatic"],
+        default="standard",
+        help="Transition pacing intensity",
+    )
+    local_generate.add_argument(
+        "--transition-profile",
+        choices=["auto", "general", "crisis", "sports", "politics"],
+        default="auto",
+        help="Transition grammar profile",
+    )
+    local_generate.add_argument("--use-gemini", action="store_true", default=True, help="Enable Gemini refinement")
+    local_generate.add_argument("--no-gemini", action="store_false", dest="use_gemini", help="Disable Gemini")
+    local_generate.add_argument(
+        "--show-runtime-logs",
+        action="store_true",
+        help="Print captured runtime logs after completion",
+    )
+    local_generate.set_defaults(func=cmd_local_generate)
 
     return parser
 

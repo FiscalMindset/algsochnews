@@ -154,9 +154,27 @@ If you use repo venv:
   --api http://127.0.0.1:8000 \
   --url "https://example.com/news/story" \
   --max-segments 6 \
+  --transition-intensity standard \
+  --transition-profile auto \
   --use-gemini \
   --wait
 ```
+
+### Run locally without API server
+
+Use this when your client should run the full pipeline directly, without `uvicorn` or `backend.main` as a web server.
+
+```bash
+./.venv/bin/python -m backend.cli local-generate \
+  --url "https://example.com/news/story" \
+  --max-segments 6 \
+  --transition-intensity standard \
+  --transition-profile auto \
+  --use-gemini \
+  --show-runtime-logs
+```
+
+Output includes job id, selected model, QA summary, retry decision/rounds, video path/url, and script path.
 
 ### Generate async and poll later
 
@@ -192,6 +210,9 @@ If you use repo venv:
 - --interval: polling interval while waiting
 - --wait-timeout: max total wait time
 - --max-segments: valid range 4 to 12
+- --transition-intensity: subtle | standard | dramatic
+- --transition-profile: auto | general | crisis | sports | politics
+- local-generate: in-process run, no API server required
 
 ## API Endpoints
 

@@ -13,7 +13,7 @@ from typing import List, Optional, Sequence
 import requests
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from backend.utils import config, get_logger
+from backend.utils import config, get_logger, sanitize_text
 
 log = get_logger("visual_planner")
 
@@ -215,51 +215,141 @@ def _create_anchor_panel(size: tuple[int, int], top_tag: str) -> Image.Image:
     return panel
 
 
-def _create_support_visual(size: tuple[int, int], headline: str, prompt: str, top_tag: str) -> Image.Image:
+def _create_support_visual(size: tuple[int, int], headline: str, support_copy: str, top_tag: str) -> Image.Image:
     base = _gradient_background(size, (24, 29, 52), (63, 31, 42))
     draw = ImageDraw.Draw(base)
     width, height = size
 
     draw.rounded_rectangle((20, 20, width - 20, height - 20), radius=22, outline=(255, 255, 255), width=2)
-    draw.rounded_rectangle((32, 30, 210, 74), radius=12, fill=(22, 25, 39))
-    draw.text((48, 42), top_tag, font=_font(20, bold=True), fill=(255, 216, 84))
+    draw.rounded_rectangle((32, 30, 218, 74), radius=12, fill=(22, 25, 39))
+    support_tag_font = _font(18, bold=True)
+    tag_text = _truncate_to_width(draw, top_tag.upper(), support_tag_font, 170)
+    draw.text((46, 44), tag_text, font=support_tag_font, fill=(255, 216, 84))
 
     for x in range(60, width, 120):
         draw.line((x, 110, x - 80, height - 40), fill=(214, 224, 248), width=2)
     for y in range(120, height, 72):
         draw.line((40, y, width - 40, y), fill=(90, 118, 170), width=1)
 
-    title_lines = textwrap.wrap(headline, width=20)[:3]
-    prompt_lines = textwrap.wrap(prompt, width=28)[:5]
-    y = 120
+    title_font = _font(36, bold=True)
+    detail_font = _font(20)
+    title_lines = _wrap(draw, headline, title_font, width - 104, 2)
+    detail_lines = _wrap(draw, support_copy, detail_font, width - 104, 3)
+
+    y = 104
     for line in title_lines:
-        draw.text((52, y), line, font=_font(34, bold=True), fill=(255, 255, 255))
-        y += 40
+        draw.text((52, y), line, font=title_font, fill=(255, 255, 255))
+        y += 42
+
+    y += 6
+    draw.line((52, y, width - 52, y), fill=(121, 158, 221), width=2)
     y += 12
-    for line in prompt_lines:
-        draw.text((52, y), line, font=_font(18), fill=(205, 216, 240))
+    for line in detail_lines:
+        draw.text((52, y), line, font=detail_font, fill=(208, 220, 244))
         y += 28
 
-    draw.rounded_rectangle((44, height - 138, width - 44, height - 54), radius=18, fill=(10, 14, 24))
-    draw.text((64, height - 118), "AI SUPPORT VISUAL", font=_font(20, bold=True), fill=(255, 255, 255))
-    draw.text((64, height - 88), "Generated planning placeholder for the right-side panel", font=_font(16), fill=(165, 182, 214))
+    chip_box = (44, height - 78, width - 44, height - 34)
+    draw.rounded_rectangle(chip_box, radius=14, fill=(10, 14, 24))
+    draw.text((62, height - 64), "SUPPORT VISUAL", font=_font(18, bold=True), fill=(255, 255, 255))
+    draw.text((250, height - 62), "Story context generated from available source text", font=_font(14), fill=(167, 189, 226))
     return base
 
 
+def _brief_copy(text: str, max_words: int = 22) -> str:
+    cleaned = sanitize_text(text or "")
+    if not cleaned:
+        return "Context visual generated from verified story details."
+
+    words = cleaned.split()
+    if len(words) <= max_words:
+        return cleaned
+    return " ".join(words[:max_words]) + "..."
+
+
+def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+    if not text:
+        return 0
+    box = draw.textbbox((0, 0), text, font=font)
+    return box[2] - box[0]
+
+
+def _split_token(draw: ImageDraw.ImageDraw, token: str, font: ImageFont.ImageFont, width: int) -> List[str]:
+    if _text_width(draw, token, font) <= width:
+        return [token]
+
+    chunks: List[str] = []
+    current = ""
+    for char in token:
+        candidate = f"{current}{char}"
+        if current and _text_width(draw, candidate, font) > width:
+            chunks.append(current)
+            current = char
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _truncate_to_width(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    width: int,
+    suffix: str = "...",
+) -> str:
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return ""
+    if _text_width(draw, cleaned, font) <= width:
+        return cleaned
+
+    low, high = 0, len(cleaned)
+    best = suffix
+    while low <= high:
+        mid = (low + high) // 2
+        candidate = f"{cleaned[:mid].rstrip()}{suffix}"
+        if _text_width(draw, candidate, font) <= width:
+            best = candidate
+            low = mid + 1
+        else:
+            high = mid - 1
+    return best
+
+
 def _wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, width: int, max_lines: int) -> List[str]:
-    words = text.split()
+    words = " ".join((text or "").split()).split()
+    if not words or max_lines <= 0:
+        return []
+
+    tokens: List[str] = []
+    for word in words:
+        tokens.extend(_split_token(draw, word, font, width))
+
     lines: List[str] = []
     current: List[str] = []
-    for word in words:
-        candidate = " ".join(current + [word])
-        box = draw.textbbox((0, 0), candidate, font=font)
-        if box[2] - box[0] > width and current:
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if len(lines) == max_lines - 1:
+            tail = " ".join(current + tokens[i:])
+            lines.append(_truncate_to_width(draw, tail, font, width))
+            return lines
+
+        candidate = " ".join(current + [token]) if current else token
+        if _text_width(draw, candidate, font) <= width:
+            current.append(token)
+            i += 1
+            continue
+
+        if current:
             lines.append(" ".join(current))
-            current = [word]
-            if len(lines) == max_lines:
-                break
+            current = []
         else:
-            current.append(word)
+            lines.append(_truncate_to_width(draw, token, font, width))
+            i += 1
+
     if current and len(lines) < max_lines:
         lines.append(" ".join(current))
     return lines
@@ -300,6 +390,7 @@ def _write_html_frame(
         visual_src = html.escape(visual_url or "")
         source_domain = html.escape((source_domain or "news desk").upper())
         visual_label = "SOURCE" if visual_kind == "source" else "AI SUPPORT"
+        transition_label = html.escape(str(package.get("transition", "cut")).replace("_", " "))
 
         html_doc = f"""<!doctype html>
 <html lang=\"en\">
@@ -309,97 +400,189 @@ def _write_html_frame(
     <title>{main_headline}</title>
     <style>
         :root {{
-            --bg1: #060d1d;
-            --bg2: #0c1f3f;
+            --bg1: #040c1b;
+            --bg2: #0b1e3d;
             --ink: #f7fbff;
-            --sub: #bdd0ee;
-            --accent: #ef4444;
+            --sub: #c3d5f1;
+            --accent: #e11d2f;
         }}
         * {{ box-sizing: border-box; }}
-        html, body {{ margin: 0; width: 1280px; height: 720px; font-family: 'Inter', 'Segoe UI', sans-serif; }}
+        html, body {{
+            margin: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden !important;
+            background: #030811;
+        }}
         body {{
-            background: radial-gradient(circle at 82% 8%, rgba(59,130,246,.45), transparent 42%),
-                                    linear-gradient(135deg, var(--bg1), var(--bg2));
-            color: var(--ink);
             display: grid;
-            grid-template-rows: 84px 1fr 94px;
-            padding: 18px 24px;
-            gap: 12px;
+            place-items: center;
+            font-family: 'Inter', 'Segoe UI', sans-serif;
+            color: var(--ink);
+        }}
+        .frame {{
+            width: min(100vw, calc(100vh * 16 / 9));
+            height: min(100vh, calc(100vw * 9 / 16));
+            border-radius: 18px;
+            border: 1px solid rgba(146, 188, 255, 0.22);
+            box-shadow: 0 28px 60px rgba(3, 8, 20, 0.66);
+            background: radial-gradient(circle at 82% 8%, rgba(59,130,246,.40), transparent 42%),
+                linear-gradient(135deg, var(--bg1), var(--bg2));
+            display: grid;
+            grid-template-rows: minmax(0, 22%) 1fr minmax(0, 24%);
+            gap: clamp(4px, 0.8vw, 12px);
+            padding: clamp(6px, 1.1vw, 18px);
+            overflow: hidden;
         }}
         .top {{
-            border: 1px solid rgba(255,255,255,.15);
-            border-radius: 18px;
-            background: rgba(4,10,20,.78);
+            border: 1px solid rgba(255,255,255,.18);
+            border-radius: 16px;
+            background: rgba(5, 12, 24, .80);
             display: grid;
-            grid-template-columns: 180px 1fr;
+            grid-template-columns: minmax(74px, 16%) minmax(0, 1fr);
             align-items: center;
-            padding: 10px 16px;
-            gap: 16px;
+            gap: clamp(6px, 0.9vw, 16px);
+            padding: clamp(5px, 0.8vw, 12px) clamp(6px, 1vw, 16px);
+            min-height: 0;
         }}
         .tag {{
             justify-self: start;
             background: var(--accent);
             border-radius: 999px;
-            padding: 8px 12px;
-            font-size: 18px;
+            padding: clamp(3px, 0.7vw, 10px) clamp(6px, 0.9vw, 14px);
+            font-size: clamp(9px, 1.05vw, 20px);
             font-weight: 800;
             letter-spacing: .08em;
             text-transform: uppercase;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }}
-        .heads h1 {{ margin: 0; font-size: 38px; line-height: 1.08; }}
-        .heads p {{ margin: 6px 0 0 0; color: var(--sub); font-size: 22px; line-height: 1.25; }}
+        .heads {{ min-width: 0; }}
+        .heads h1 {{
+            margin: 0;
+            font-size: clamp(12px, 2.3vw, 40px);
+            line-height: 1.04;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }}
+        .heads p {{
+            margin: clamp(4px, .7vw, 8px) 0 0 0;
+            color: var(--sub);
+            font-size: clamp(10px, 1.3vw, 22px);
+            line-height: 1.2;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }}
         .main {{
             display: grid;
-            grid-template-columns: 390px 1fr;
-            gap: 14px;
+            grid-template-columns: minmax(90px, 31%) minmax(0, 1fr);
+            gap: clamp(4px, 0.8vw, 14px);
+            min-height: 0;
         }}
         .left, .right {{
             border: 1px solid rgba(255,255,255,.15);
-            border-radius: 18px;
+            border-radius: 16px;
             overflow: hidden;
-            background: rgba(7,13,24,.76);
+            background: rgba(7,13,24,.74);
+            min-height: 0;
         }}
         .left {{
             display: grid;
             align-content: end;
-            padding: 16px;
-            background: linear-gradient(160deg, rgba(20,34,66,.95), rgba(6,12,24,.95));
+            gap: 6px;
+            padding: clamp(5px, 0.8vw, 14px);
+            background: linear-gradient(160deg, rgba(20,34,66,.94), rgba(6,12,24,.94));
         }}
-        .left .label {{ font-size: 20px; color: #9ec3ff; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }}
-        .left .note {{ margin-top: 10px; font-size: 16px; color: #dbeafe; line-height: 1.45; }}
+        .left .label {{
+            font-size: clamp(10px, 1.1vw, 20px);
+            color: #b7d1fb;
+            font-weight: 700;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }}
+        .left .cue {{
+            margin: 0;
+            font-size: clamp(9px, 0.95vw, 15px);
+            color: #dce9ff;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }}
+        .right-wrap {{ position: relative; height: 100%; }}
         .right img {{ width: 100%; height: 100%; object-fit: cover; display: block; }}
         .visual-kind {{
             position: absolute;
-            margin: 12px;
-            background: rgba(3,9,18,.8);
-            border: 1px solid rgba(255,255,255,.2);
+            top: clamp(4px, 0.8vw, 12px);
+            left: clamp(4px, 0.8vw, 12px);
+            background: rgba(3,9,18,.82);
+            border: 1px solid rgba(255,255,255,.24);
             color: #dbeafe;
             font-weight: 700;
-            font-size: 14px;
-            padding: 6px 10px;
+            font-size: clamp(8px, 0.85vw, 14px);
+            padding: clamp(3px, 0.5vw, 6px) clamp(6px, 0.8vw, 10px);
             border-radius: 999px;
             letter-spacing: .06em;
+            max-width: 45%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }}
-        .right-wrap {{ position: relative; height: 100%; }}
         .bottom {{
-            border: 1px solid rgba(255,255,255,.15);
-            border-radius: 18px;
-            background: rgba(4,10,20,.78);
+            border: 1px solid rgba(255,255,255,.16);
+            border-radius: 16px;
+            background: rgba(4,10,20,.80);
             display: grid;
-            grid-template-rows: 1fr auto;
-            padding: 12px 16px;
-            gap: 10px;
+            grid-template-rows: auto auto;
+            padding: clamp(5px, 0.8vw, 12px) clamp(6px, 1vw, 16px);
+            gap: clamp(4px, .6vw, 10px);
+            min-height: 0;
         }}
-        .lower {{ display: flex; justify-content: space-between; align-items: center; gap: 10px; }}
-        .lower strong {{ font-size: 26px; }}
-        .time {{ font-family: 'JetBrains Mono', monospace; color: #93c5fd; font-size: 16px; }}
+        .lower {{
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            min-height: 0;
+        }}
+        .lower strong {{
+            font-size: clamp(10px, 1.45vw, 28px);
+            line-height: 1.17;
+            max-width: 68%;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            overflow-wrap: anywhere;
+        }}
+        .time {{
+            font-family: 'JetBrains Mono', monospace;
+            color: #9fc6ff;
+            font-size: clamp(8px, 0.95vw, 16px);
+            max-width: 32%;
+            text-align: right;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
         .ticker {{
-            background: rgba(239,68,68,.2);
-            border: 1px solid rgba(239,68,68,.45);
+            background: rgba(225, 29, 47, .24);
+            border: 1px solid rgba(225, 29, 47, .52);
             border-radius: 12px;
-            padding: 8px 10px;
-            font-size: 18px;
-            color: #fee2e2;
+            padding: clamp(4px, .6vw, 10px) clamp(6px, 0.8vw, 12px);
+            font-size: clamp(9px, 1.05vw, 19px);
+            color: #ffe5e7;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -407,33 +590,35 @@ def _write_html_frame(
     </style>
 </head>
 <body>
-    <section class=\"top\">
-        <div class=\"tag\">{top_tag}</div>
-        <div class=\"heads\">
-            <h1>{main_headline}</h1>
-            <p>{subheadline}</p>
-        </div>
-    </section>
-    <section class=\"main\">
-        <div class=\"left\">
-            <div class=\"label\">AI Anchor Panel</div>
-            <div class=\"note\">Camera cue: {html.escape(package.get('camera_motion', 'steady')).replace('_', ' ')}</div>
-            <div class=\"note\">Transition: {html.escape(package.get('transition', 'cut'))}</div>
-        </div>
-        <div class=\"right\">
-            <div class=\"right-wrap\">
-                <span class=\"visual-kind\">{visual_label}</span>
-                <img src=\"{visual_src}\" alt=\"Frame visual\" />
+    <article class=\"frame\">
+        <section class=\"top\">
+            <div class=\"tag\">{top_tag}</div>
+            <div class=\"heads\">
+                <h1>{main_headline}</h1>
+                <p>{subheadline}</p>
             </div>
-        </div>
-    </section>
-    <section class=\"bottom\">
-        <div class=\"lower\">
-            <strong>{lower_third}</strong>
-            <span class=\"time\">{start_tc} - {end_tc} | {source_domain}</span>
-        </div>
-        <div class=\"ticker\">{ticker_text}</div>
-    </section>
+        </section>
+        <section class=\"main\">
+            <div class=\"left\">
+                <div class=\"label\">Anchor Feed</div>
+                <p class=\"cue\">Camera: {html.escape(package.get('camera_motion', 'steady')).replace('_', ' ')}</p>
+                <p class=\"cue\">Transition: {transition_label}</p>
+            </div>
+            <div class=\"right\">
+                <div class=\"right-wrap\">
+                    <span class=\"visual-kind\">{visual_label}</span>
+                    <img src=\"{visual_src}\" alt=\"Frame visual\" />
+                </div>
+            </div>
+        </section>
+        <section class=\"bottom\">
+            <div class=\"lower\">
+                <strong>{lower_third}</strong>
+                <span class=\"time\">{start_tc} - {end_tc} | {source_domain}</span>
+            </div>
+            <div class=\"ticker\">{ticker_text}</div>
+        </section>
+    </article>
 </body>
 </html>
 """
@@ -455,32 +640,35 @@ def _compose_scene(
     for x in range(0, width, 80):
         draw.line((x, 0, x + 180, height), fill=(18, 31, 54), width=1)
 
-    left_box = (42, 122, 440, 610)
-    right_box = (486, 122, 1238, 610)
-    top_bar = (34, 28, width - 34, 108)
-    lower_bar = (34, 626, width - 34, height - 34)
-    ticker_bar = (46, height - 76, width - 46, height - 42)
+    left_box = (42, 172, 440, 548)
+    right_box = (486, 172, 1238, 548)
+    top_bar = (34, 24, width - 34, 152)
+    lower_bar = (34, 556, width - 34, height - 24)
+    ticker_bar = (46, height - 72, width - 46, height - 34)
 
     draw.rounded_rectangle(top_bar, radius=24, fill=(9, 13, 22), outline=(39, 56, 90), width=2)
     draw.rounded_rectangle(lower_bar, radius=24, fill=(10, 14, 25), outline=(39, 56, 90), width=2)
     draw.rounded_rectangle(left_box, radius=24, fill=(8, 14, 24), outline=(48, 74, 120), width=2)
     draw.rounded_rectangle(right_box, radius=24, fill=(8, 14, 24), outline=(48, 74, 120), width=2)
 
-    tag_box = (54, 42, 240, 94)
+    tag_box = (54, 36, 236, 94)
     draw.rounded_rectangle(tag_box, radius=16, fill=(195, 34, 46))
-    draw.text((74, 58), package["top_tag"], font=_font(24, bold=True), fill="white")
+    scene_tag_font = _font(20, bold=True)
+    tag_text = _truncate_to_width(draw, package.get("top_tag", "UPDATE"), scene_tag_font, 170)
+    draw.text((72, 54), tag_text, font=scene_tag_font, fill="white")
 
-    headline_font = _font(34, bold=True)
-    sub_font = _font(20)
-    headline_lines = _wrap(draw, package["main_headline"], headline_font, 860, 2)
-    subheadline_lines = _wrap(draw, package["subheadline"], sub_font, 860, 2)
-    y = 40
+    headline_font = _font(30, bold=True)
+    sub_font = _font(18)
+    headline_lines = _wrap(draw, package["main_headline"], headline_font, 850, 2)
+    subheadline_lines = _wrap(draw, package["subheadline"], sub_font, 850, 2)
+    y = 34
     for line in headline_lines:
         draw.text((270, y), line, font=headline_font, fill=(255, 255, 255))
-        y += 38
+        y += 33
+    y += 4
     for line in subheadline_lines:
         draw.text((270, y), line, font=sub_font, fill=(188, 204, 229))
-        y += 24
+        y += 22
 
     anchor_panel = _create_anchor_panel((left_box[2] - left_box[0], left_box[3] - left_box[1]), package["top_tag"])
     canvas.paste(anchor_panel, (left_box[0], left_box[1]))
@@ -488,19 +676,24 @@ def _compose_scene(
     panel_visual = _fit_cover(panel_visual, (right_box[2] - right_box[0], right_box[3] - right_box[1]))
     canvas.paste(panel_visual, (right_box[0], right_box[1]))
 
-    draw.text((56, 584), package["left_panel"], font=_font(16, bold=True), fill=(171, 188, 220))
-    right_panel_lines = _wrap(draw, package["right_panel"], _font(16), 700, 2)
-    y = 584
-    for line in right_panel_lines:
-        draw.text((504, y), line, font=_font(16), fill=(171, 188, 220))
-        y += 20
-
     lower_font = _font(22, bold=True)
     mono_font = _font(16)
-    draw.text((56, 642), package.get("lower_third", package["main_headline"]), font=lower_font, fill=(255, 255, 255))
-    draw.text(
-        (56, 668),
+    lower_lines = _wrap(draw, package.get("lower_third", package["main_headline"]), lower_font, 760, 2)
+    lower_y = 572
+    for line in lower_lines:
+        draw.text((56, lower_y), line, font=lower_font, fill=(255, 255, 255))
+        lower_y += 23
+
+    time_line = _truncate_to_width(
+        draw,
         f"{package['start_timecode']} - {package['end_timecode']}  {source_domain.upper() or 'NEWS DESK'}",
+        mono_font,
+        360,
+    )
+    time_width = _text_width(draw, time_line, mono_font)
+    draw.text(
+        (width - 56 - time_width, 574),
+        time_line,
         font=mono_font,
         fill=(116, 145, 194),
     )
@@ -508,12 +701,8 @@ def _compose_scene(
     draw.rounded_rectangle(ticker_bar, radius=14, fill=(141, 23, 36))
     ticker_font = _font(18, bold=True)
     ticker_text = package.get("ticker_text", package["main_headline"])
-    ticker_loop = f"{ticker_text}   •   {ticker_text}   •   {ticker_text}"
-    draw.text((66, height - 68), ticker_loop, font=ticker_font, fill=(255, 248, 248))
-
-    control_box = (width - 312, 646, width - 58, 698)
-    draw.rounded_rectangle(control_box, radius=16, fill=(8, 12, 21), outline=(195, 34, 46), width=2)
-    draw.text((width - 290, 662), "LIVE EDIT CONTROL", font=_font(17, bold=True), fill=(255, 214, 214))
+    ticker_line = _truncate_to_width(draw, ticker_text, ticker_font, ticker_bar[2] - ticker_bar[0] - 24)
+    draw.text((58, height - 62), ticker_line, font=ticker_font, fill=(255, 248, 248))
 
     canvas.save(dest, "JPEG", quality=94)
     return dest
@@ -551,14 +740,15 @@ def plan_visuals(
             source_item = downloaded[source_cursor]
             source_cursor += 1
 
+        support_copy = _brief_copy(package.get("source_excerpt", ""), max_words=20)
         support_prompt = (
-            f"realistic news broadcast support visual, {package['main_headline'].lower()}, "
-            f"{package['source_excerpt'].lower()}, cinematic lighting, newsroom quality"
+            f"Broadcast support visual for '{package['main_headline']}'. "
+            f"Context: {support_copy}"
         )
 
         if source_item:
             layout = "anchor_left + source_visual_right"
-            right_panel = f"Source article image {source_cursor} supporting the {package['main_headline']} beat"
+            right_panel = f"Source visual supporting: {package['main_headline']}"
             panel_visual = Image.open(source_item["path"]).convert("RGB")
             source_image_url = source_item["url"]
             ai_support_visual_prompt = None
@@ -569,8 +759,8 @@ def plan_visuals(
             visual_confidence = 0.92
         else:
             layout = "anchor_left + ai_support_visual_right"
-            right_panel = f"AI-generated support visual for {package['main_headline'].lower()}"
-            panel_visual = _create_support_visual((752, 488), package["main_headline"], support_prompt, package["top_tag"])
+            right_panel = f"Support visual aligned to: {package['main_headline']}"
+            panel_visual = _create_support_visual((752, 376), package["main_headline"], support_copy, package["top_tag"])
             support_path = support_dir / f"seg_{index:02d}_support.jpg"
             panel_visual.save(support_path, "JPEG", quality=92)
             source_image_url = None

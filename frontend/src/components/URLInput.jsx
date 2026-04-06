@@ -22,6 +22,8 @@ export default function URLInput({ onSubmit, disabled }) {
   const [touched, setTouched] = useState(false)
   const [useGemini, setUseGemini]       = useState(true)
   const [maxSegments, setMaxSegments]   = useState(7)
+  const [transitionIntensity, setTransitionIntensity] = useState('standard')
+  const [transitionProfile, setTransitionProfile] = useState('auto')
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const valid   = isValidUrl(url)
@@ -30,7 +32,7 @@ export default function URLInput({ onSubmit, disabled }) {
   function handleSubmit(e) {
     e.preventDefault()
     if (!valid || disabled) return
-    onSubmit(url.trim(), useGemini, maxSegments)
+    onSubmit(url.trim(), useGemini, maxSegments, transitionIntensity, transitionProfile)
   }
 
   return (
@@ -102,6 +104,36 @@ export default function URLInput({ onSubmit, disabled }) {
                 onChange={e => setMaxSegments(Number(e.target.value))}
                 className="segment-slider"
               />
+            </label>
+
+            <label className="adv-row adv-row--stack">
+              <span>Transition intensity</span>
+              <select
+                id="transition-intensity-select"
+                value={transitionIntensity}
+                onChange={e => setTransitionIntensity(e.target.value)}
+                className="transition-select"
+              >
+                <option value="subtle">Subtle</option>
+                <option value="standard">Standard</option>
+                <option value="dramatic">Dramatic</option>
+              </select>
+            </label>
+
+            <label className="adv-row adv-row--stack">
+              <span>Story transition grammar</span>
+              <select
+                id="transition-profile-select"
+                value={transitionProfile}
+                onChange={e => setTransitionProfile(e.target.value)}
+                className="transition-select"
+              >
+                <option value="auto">Auto detect</option>
+                <option value="general">General</option>
+                <option value="crisis">Crisis</option>
+                <option value="politics">Politics</option>
+                <option value="sports">Sports</option>
+              </select>
             </label>
           </div>
         )}
@@ -184,6 +216,29 @@ export default function URLInput({ onSubmit, disabled }) {
         .adv-row {
           display: flex; align-items: center; justify-content: space-between;
           font-size: 13px; color: rgba(255,255,255,0.7); cursor: pointer;
+        }
+        .adv-row--stack {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .transition-select {
+          width: 100%;
+          border: 1px solid rgba(255,255,255,0.16);
+          border-radius: 10px;
+          background: rgba(255,255,255,0.05);
+          color: rgba(255,255,255,0.9);
+          padding: 8px 10px;
+          font-size: 13px;
+          outline: none;
+        }
+        .transition-select:focus {
+          border-color: var(--accent-blue);
+          box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
+        }
+        .transition-select option {
+          background: #0c1220;
+          color: #f8fafc;
         }
         .toggle {
           width: 44px; height: 24px; border-radius: 12px;

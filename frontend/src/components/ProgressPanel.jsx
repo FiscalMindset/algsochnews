@@ -1,5 +1,6 @@
 // components/ProgressPanel.jsx
 import { CheckCircle, XCircle, Loader } from 'lucide-react'
+import { buildExecutionConsoleLines, formatClock, retrySummary } from './consoleUtils'
 
 const STEPS = [
   { label: 'Extracting article',   minPct: 5  },
@@ -39,16 +40,43 @@ function AgentRail({ agents = [] }) {
   )
 }
 
-export default function ProgressPanel({ progress, message, status, agents = [], workflowOverview = null, modelVerification = null }) {
+export default function ProgressPanel({
+  progress,
+  message,
+  status,
+  agents = [],
+  workflowOverview = null,
+  modelVerification = null,
+  activityLog = [],
+  traceEvents = [],
+  runtimeLogs = [],
+  articleUrl = '',
+  jobId = null,
+}) {
+  const consoleLines = buildExecutionConsoleLines(activityLog, traceEvents, runtimeLogs)
+  const {
+    retryCount,
+    retryEvents,
+    reviewDecision,
+    qaAverage,
+    qaPassed,
+  } = retrySummary(traceEvents, agents)
+  const headerTitle =
+    status === 'failed'
+      ? 'Processing Failed'
+      : status === 'done'
+        ? 'Complete!'
+        : message || 'Running LangGraph pipeline...'
+
   return (
     <div className="prog-panel glass fade-up">
       <div className="prog-header">
         <div className="prog-title">
           {status === 'failed'
-            ? <><XCircle size={16} className="prog-icon-err" /> Processing Failed</>
+            ? <><XCircle size={16} className="prog-icon-err" /> {headerTitle}</>
             : status === 'done'
-            ? <><CheckCircle size={16} className="prog-icon-ok" /> Complete!</>
-            : <><span className="spinner" /> Generating your video…</>
+            ? <><CheckCircle size={16} className="prog-icon-ok" /> {headerTitle}</>
+            : <><span className="spinner" /> {headerTitle}</>
           }
         </div>
         <span className="prog-pct">{progress}%</span>
@@ -62,6 +90,13 @@ export default function ProgressPanel({ progress, message, status, agents = [], 
       </div>
 
       <p className="prog-message">{message}</p>
+
+      {(articleUrl || jobId) && (
+        <div className="workflow-note">
+          {articleUrl && <div><strong>Source URL:</strong> <span className="mono-break">{articleUrl}</span></div>}
+          {jobId && <div><strong>Job ID:</strong> <span className="mono-break">{jobId}</span></div>}
+        </div>
+      )}
 
       <AgentRail agents={agents} />
 
@@ -77,6 +112,49 @@ export default function ProgressPanel({ progress, message, status, agents = [], 
           {modelVerification.upgraded ? ' (auto-upgraded from configured model)' : ''}
         </div>
       )}
+
+      {(retryCount > 0 || retryEvents.length > 0 || reviewDecision || status === 'processing') && (
+        <div className="workflow-note">
+          <strong>Retry visibility:</strong> retries={retryCount}
+          {reviewDecision && (
+            <div className="retry-lines">
+              <div>
+                decision={reviewDecision}
+                {qaAverage != null ? ` | qa=${Number(qaAverage).toFixed(2)}` : ''}
+                {qaPassed != null ? ` | passed=${String(qaPassed)}` : ''}
+              </div>
+              {retryCount === 0 && reviewDecision === 'finalize' && (
+                <div>No retry executed: QA finalized this run on first pass.</div>
+              )}
+            </div>
+          )}
+          {!reviewDecision && status === 'processing' && (
+            <div className="retry-lines">
+              <div>QA decision pending...</div>
+            </div>
+          )}
+          {retryEvents.length > 0 && (
+            <div className="retry-lines">
+              {retryEvents.slice(-8).map((event, idx) => (
+                <div key={`retry-${idx}-${event.ts}`}>{formatClock(event.ts)} {event.agent_name || event.agent_key}: {event.decision || event.route_to}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="console-panel">
+        <div className="console-title">Execution console</div>
+        <div className="console-body">
+          {consoleLines.length ? (
+            consoleLines.map((line) => (
+              <div key={line.key} className={`console-line console-line--${line.kind}`}>{line.text}</div>
+            ))
+          ) : (
+            <div className="console-line">Waiting for first event...</div>
+          )}
+        </div>
+      </div>
 
       <div className="steps">
         {STEPS.map((step, i) => {
@@ -158,6 +236,100 @@ export default function ProgressPanel({ progress, message, status, agents = [], 
           font-size: 12px;
           line-height: 1.6;
           color: rgba(219,234,254,0.88);
+        }
+        .mono-break {
+          font-family: var(--font-mono);
+          overflow-wrap: anywhere;
+        }
+        .retry-lines {
+          margin-top: 8px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: rgba(255,255,255,0.86);
+        }
+        .console-panel {
+          border-radius: 14px;
+          border: 1px solid rgba(255,255,255,0.14);
+          background: rgba(2, 6, 14, 0.88);
+          overflow: hidden;
+        }
+        .console-title {
+          padding: 10px 12px;
+          font-size: 11px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.55);
+          background: rgba(255,255,255,0.04);
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .console-body {
+          max-height: 260px;
+          overflow: auto;
+          padding: 10px 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .console-line {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          line-height: 1.5;
+          color: rgba(255,255,255,0.78);
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+        }
+        .console-line--trace {
+          color: #bfdbfe;
+        }
+        .console-line--graph {
+          color: #fde68a;
+        }
+        .console-line--graph-route {
+          color: #fcd34d;
+        }
+        .console-line--trace-payload {
+          color: #dbeafe;
+        }
+        .console-line--activity {
+          color: rgba(165, 180, 252, 0.92);
+        }
+        .console-line--runtime-info,
+        .console-line--runtime-main {
+          color: rgba(220, 252, 231, 0.9);
+        }
+        .console-line--runtime-http {
+          color: rgba(148, 163, 184, 0.8);
+        }
+        .console-line--runtime-debug {
+          color: rgba(134, 239, 172, 0.88);
+        }
+        .console-line--runtime-warn {
+          color: #fde68a;
+        }
+        .console-line--runtime-error {
+          color: #fca5a5;
+        }
+        .console-line--runtime-scraper {
+          color: #fcd34d;
+        }
+        .console-line--runtime-segmenter {
+          color: #c4b5fd;
+        }
+        .console-line--runtime-narration {
+          color: #93c5fd;
+        }
+        .console-line--runtime-qa {
+          color: #fdba74;
+        }
+        .console-line--runtime-tts {
+          color: #86efac;
+        }
+        .console-line--runtime-video,
+        .console-line--runtime-html {
+          color: rgba(220, 252, 231, 0.88);
         }
         .steps {
           display: grid; grid-template-columns: 1fr 1fr 1fr;

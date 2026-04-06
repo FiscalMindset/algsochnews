@@ -4,6 +4,7 @@ langchain_agents.py - Structured LangChain/Gemini helpers for newsroom agents.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
@@ -12,6 +13,25 @@ from backend.gemini_router import build_langchain_chat_model
 from backend.utils import get_logger, sanitize_text
 
 log = get_logger("langchain_agents")
+
+PROMO_COPY_RE = re.compile(
+    r"(listen\s+to|full\s+discussion|full\s+episode|podcast|apple\s+podcasts?|spotify|youtube|"
+    r"click\s+here|join\s+.*\s+channel|support\s+us)",
+    re.IGNORECASE,
+)
+
+INSTRUCTIONAL_NARRATION_RE = re.compile(
+    r"^(?:please\s+)?(?:use\s+(?!of\b)|keep\b|shift\b|deliver\b|read\b|speak\b|"
+    r"open\b|close\b|start\b|end\b|stress\b|emphasize\b|highlight\b|focus\b|"
+    r"mention\b|frame\b|convey\b|ensure\b|avoid\b|make\s+sure\b|let\b)",
+    re.IGNORECASE,
+)
+INSTRUCTIONAL_HINT_RE = re.compile(
+    r"(read\s+the\s+question|stress\s+the\s+words?|with\s+a\s+(?:serious|empathetic|"
+    r"authoritative|dramatic|emotional|neutral)\s+tone|tone\b|pace\b|delivery\b|"
+    r"voice[-\s]?over\b|anchor\s+should\b|control\s+room\b)",
+    re.IGNORECASE,
+)
 
 
 class EditorialBeat(BaseModel):
@@ -67,6 +87,29 @@ def _clip(text: str, words: int) -> str:
     clean = sanitize_text(text)
     tokens = clean.split()
     return " ".join(tokens[:words]).strip()
+
+
+def _looks_like_instructional_line(text: str) -> bool:
+    clean = sanitize_text(text).strip().lower()
+    if not clean:
+        return False
+    if INSTRUCTIONAL_NARRATION_RE.search(clean):
+        return True
+    if INSTRUCTIONAL_HINT_RE.search(clean):
+        return True
+    return False
+
+
+def _is_usable_narration_line(text: str, *, min_words: int, max_words: int) -> bool:
+    clean = sanitize_text(text).strip()
+    words = len(clean.split())
+    if words < min_words or words > max_words:
+        return False
+    if PROMO_COPY_RE.search(clean):
+        return False
+    if _looks_like_instructional_line(clean):
+        return False
+    return True
 
 
 
@@ -258,15 +301,15 @@ def apply_editorial_directives(
         if idx < 0 or idx >= len(updated):
             continue
         tweak = sanitize_text(beat.get("narration_tweak", "")).strip()
-        if 8 <= len(tweak.split()) <= 60:
+        if _is_usable_narration_line(tweak, min_words=8, max_words=60):
             updated[idx] = tweak
 
     opening = sanitize_text(directives.get("opening_hook", "")).strip()
-    if opening and len(updated) > 0 and 8 <= len(opening.split()) <= 45:
+    if opening and len(updated) > 0 and _is_usable_narration_line(opening, min_words=8, max_words=45):
         updated[0] = opening
 
     closing = sanitize_text(directives.get("closing_line", "")).strip()
-    if closing and len(updated) > 1 and 8 <= len(closing.split()) <= 45:
+    if closing and len(updated) > 1 and _is_usable_narration_line(closing, min_words=8, max_words=45):
         updated[-1] = closing
 
     return updated
@@ -292,13 +335,13 @@ def apply_packaging_overrides(copy_plan: List[dict], overrides: Dict[str, Any]) 
         ticker = sanitize_text(item.get("ticker_text", "")).strip()
         tag = sanitize_text(item.get("top_tag", "")).upper().strip()
 
-        if 2 <= len(main.split()) <= 7:
+        if 2 <= len(main.split()) <= 7 and not PROMO_COPY_RE.search(main):
             updated[idx]["main_headline"] = main
-        if 4 <= len(sub.split()) <= 12:
+        if 4 <= len(sub.split()) <= 12 and not PROMO_COPY_RE.search(sub):
             updated[idx]["subheadline"] = sub
-        if lower:
+        if lower and not PROMO_COPY_RE.search(lower):
             updated[idx]["lower_third"] = " ".join(lower.split()[:12])
-        if ticker:
+        if ticker and not PROMO_COPY_RE.search(ticker):
             updated[idx]["ticker_text"] = " ".join(ticker.split()[:14])
         if tag and len(tag.split()) <= 2:
             updated[idx]["top_tag"] = tag[:20]

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle, Clock, FileText, Loader, RefreshCw } from 'lucide-react'
+import { buildExecutionConsoleLines, formatClock, retrySummary } from './consoleUtils'
 
 function StatusIcon({ status }) {
   if (status === 'done') return <CheckCircle size={14} />
@@ -15,20 +16,7 @@ function renderValue(value) {
     ? JSON.stringify(value, null, 2)
     : JSON.stringify(value, null, 2)
   if (!serialized) return '—'
-  if (serialized.length <= 2200) return serialized
-  return `${serialized.slice(0, 2200)}\n...truncated`
-}
-
-function formatClock(ts) {
-  if (!ts) return '—'
-  const parsed = Number(ts)
-  if (!Number.isFinite(parsed)) return '—'
-  return new Date(parsed * 1000).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
+  return serialized
 }
 
 function formatDuration(start, end) {
@@ -44,10 +32,10 @@ function formatEventType(value) {
 }
 
 function AgentCard({ agent, index, traceEvents = [] }) {
-  const [showDetails, setShowDetails] = useState(agent.status === 'running')
+  const [showDetails, setShowDetails] = useState(agent.status !== 'pending')
 
   useEffect(() => {
-    if (agent.status === 'running' && !showDetails) {
+    if ((agent.status === 'running' || agent.status === 'done' || agent.status === 'failed') && !showDetails) {
       setShowDetails(true)
     }
   }, [agent.status, agent.event_count, showDetails])
@@ -57,7 +45,6 @@ function AgentCard({ agent, index, traceEvents = [] }) {
       (traceEvents || [])
         .filter((event) => event.agent_key === agent.key)
         .sort((left, right) => Number(left.ts || 0) - Number(right.ts || 0))
-        .slice(-20)
     ),
     [traceEvents, agent.key],
   )
@@ -124,7 +111,7 @@ function AgentCard({ agent, index, traceEvents = [] }) {
 
           {agent.decisions?.length > 0 && (
             <div className="agent-decisions">
-              {agent.decisions.slice(-3).map((decision, idx) => (
+              {agent.decisions.map((decision, idx) => (
                 <div key={`${agent.key}-decision-${idx}`} className="agent-decision-item">{decision}</div>
               ))}
             </div>
@@ -157,7 +144,7 @@ function AgentCard({ agent, index, traceEvents = [] }) {
           )}
 
           <div className="agent-outputs">
-            {(agent.outputs || []).slice(-4).map((output, idx) => (
+            {(agent.outputs || []).map((output, idx) => (
               <div key={idx} className="agent-output">
                 <div className="agent-output-label">{output.label}</div>
                 <pre className="agent-output-value">{renderValue(output.value)}</pre>
@@ -170,18 +157,20 @@ function AgentCard({ agent, index, traceEvents = [] }) {
   )
 }
 
-function TraceStream({ traceEvents = [] }) {
-  if (!traceEvents?.length) return null
+function ExecutionConsole({ activityLog = [], traceEvents = [], runtimeLogs = [] }) {
+  const lines = useMemo(
+    () => buildExecutionConsoleLines(activityLog, traceEvents, runtimeLogs),
+    [activityLog, traceEvents, runtimeLogs],
+  )
+  if (!lines.length) return null
+
   return (
-    <section className="activity-panel">
-      <div className="activity-title">Trace events</div>
-      <div className="activity-list">
-        {traceEvents.slice(-14).reverse().map((event, index) => (
-          <div key={`${event.ts}-${index}`} className="activity-item">
-            <strong>{event.agent_name}</strong>
-            <div>{event.event_type} - {event.message}</div>
-            {event.decision && <div>decision: {event.decision}</div>}
-            {event.route_to && <div>route: {event.route_to}</div>}
+    <section className="terminal-console">
+      <div className="terminal-console-head">Execution Console (Full Stream)</div>
+      <div className="terminal-console-body">
+        {lines.map((line) => (
+          <div key={line.key} className={`terminal-line terminal-line--${line.kind}`}>
+            {line.text}
           </div>
         ))}
       </div>
@@ -370,8 +359,24 @@ function WorkflowMap({ workflowOverview }) {
   )
 }
 
-export default function AgentWorkflowPanel({ agents = [], activityLog = [], traceEvents = [], review = null, workflowOverview = null, modelVerification = null }) {
+export default function AgentWorkflowPanel({
+  agents = [],
+  activityLog = [],
+  traceEvents = [],
+  runtimeLogs = [],
+  review = null,
+  workflowOverview = null,
+  modelVerification = null,
+}) {
   if (!agents.length && !activityLog.length && !traceEvents.length && !review && !workflowOverview) return null
+
+  const {
+    retryCount,
+    retryEvents,
+    reviewDecision,
+    qaAverage,
+    qaPassed,
+  } = useMemo(() => retrySummary(traceEvents, agents), [traceEvents, agents])
 
   return (
     <section className="workflow-panel fade-up">
@@ -401,6 +406,41 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
 
       <WorkflowMap workflowOverview={workflowOverview} />
 
+      {(reviewDecision || retryCount > 0) && (
+        <section className="workflow-map">
+          <div className="workflow-map-title">Retry visibility</div>
+          <div className="workflow-parallel">
+            <strong>Retries executed:</strong> <span>{retryCount}</span>
+          </div>
+          {reviewDecision && (
+            <div className="workflow-parallel">
+              <strong>Decision:</strong>
+              <span>
+                {reviewDecision}
+                {qaAverage != null ? ` | qa=${Number(qaAverage).toFixed(2)}` : ''}
+                {qaPassed != null ? ` | passed=${String(qaPassed)}` : ''}
+              </span>
+            </div>
+          )}
+          {retryEvents.length > 0 && (
+            <div className="workflow-edges">
+              {retryEvents.slice(-8).map((event, idx) => (
+                <span key={`wf-retry-${idx}-${event.ts}`} className="workflow-edge">
+                  {formatClock(event.ts)} {event.agent_name || event.agent_key}: {event.decision || event.route_to}
+                </span>
+              ))}
+            </div>
+          )}
+          {retryCount === 0 && reviewDecision === 'finalize' && (
+            <div className="workflow-parallel">
+              <span>No retry executed: QA finalized on first pass.</span>
+            </div>
+          )}
+        </section>
+      )}
+
+      <ExecutionConsole activityLog={activityLog} traceEvents={traceEvents} runtimeLogs={runtimeLogs} />
+
       <div className="agent-grid">
         {agents.map((agent, index) => (
           <AgentCard key={agent.key} agent={agent} index={index} traceEvents={traceEvents} />
@@ -409,15 +449,6 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
 
       <div className="workflow-bottom">
         <ExtractionPanel agents={agents} />
-        <div className="activity-panel">
-          <div className="activity-title">Live activity log</div>
-          <div className="activity-list">
-            {activityLog.slice(-10).reverse().map((item, index) => (
-              <div key={`${item}-${index}`} className="activity-item">{item}</div>
-            ))}
-          </div>
-        </div>
-        <TraceStream traceEvents={traceEvents} />
         <ReviewPanel review={review} />
       </div>
 
@@ -504,6 +535,87 @@ export default function AgentWorkflowPanel({ agents = [], activityLog = [], trac
           border: 1px solid rgba(59,130,246,0.2);
           border-radius: 999px;
           padding: 5px 8px;
+        }
+        .terminal-console {
+          border-radius: 20px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(3, 7, 16, 0.92);
+          overflow: hidden;
+        }
+        .terminal-console-head {
+          padding: 10px 14px;
+          font-size: 11px;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.58);
+          background: rgba(255,255,255,0.05);
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .terminal-console-body {
+          max-height: 360px;
+          overflow: auto;
+          padding: 12px 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .terminal-line {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          line-height: 1.55;
+          color: rgba(255,255,255,0.82);
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+        }
+        .terminal-line--trace {
+          color: #bfdbfe;
+        }
+        .terminal-line--graph {
+          color: #fde68a;
+        }
+        .terminal-line--graph-route {
+          color: #fcd34d;
+        }
+        .terminal-line--trace-payload {
+          color: #dbeafe;
+        }
+        .terminal-line--activity {
+          color: rgba(165, 180, 252, 0.92);
+        }
+        .terminal-line--runtime-info,
+        .terminal-line--runtime-main {
+          color: rgba(220, 252, 231, 0.9);
+        }
+        .terminal-line--runtime-http {
+          color: rgba(148, 163, 184, 0.8);
+        }
+        .terminal-line--runtime-debug {
+          color: rgba(134, 239, 172, 0.88);
+        }
+        .terminal-line--runtime-warn {
+          color: #fde68a;
+        }
+        .terminal-line--runtime-error {
+          color: #fca5a5;
+        }
+        .terminal-line--runtime-scraper {
+          color: #fcd34d;
+        }
+        .terminal-line--runtime-segmenter {
+          color: #c4b5fd;
+        }
+        .terminal-line--runtime-narration {
+          color: #93c5fd;
+        }
+        .terminal-line--runtime-qa {
+          color: #fdba74;
+        }
+        .terminal-line--runtime-tts {
+          color: #86efac;
+        }
+        .terminal-line--runtime-video,
+        .terminal-line--runtime-html {
+          color: rgba(220, 252, 231, 0.9);
         }
         .agent-card {
           background: linear-gradient(180deg, rgba(13, 18, 32, 0.92), rgba(8, 12, 22, 0.92));

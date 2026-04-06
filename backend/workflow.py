@@ -35,6 +35,11 @@ AGENT_BLUEPRINTS = [
         "name": "Video Generation Agent",
         "role": "Synthesizes audio, aligns transcript cues, and renders the final MP4 output.",
     },
+    {
+        "key": "render_review",
+        "name": "Render QA Agent",
+        "role": "Reviews rendered media quality, caption coverage, and runtime fidelity before finalize.",
+    },
 ]
 
 
@@ -75,6 +80,7 @@ def build_workflow_map() -> dict:
             "Visual Packaging Agent",
             "QA / Evaluation Agent",
             "Video Generation Agent",
+            "Render QA Agent",
         ],
         "parallel_stage": {
             "label": "Packaging fan-out",
@@ -88,7 +94,8 @@ def build_workflow_map() -> dict:
             "qa_retry_editor -> editor",
             "qa_retry_packaging -> packaging",
             "qa_retry_editor_and_packaging -> editor+packaging",
-            "video_generation -> finalize",
+            "video_generation -> render_review",
+            "render_review -> finalize",
         ],
         "retry_policy": {
             "targeted": True,
