@@ -370,6 +370,9 @@ async def _node_extraction(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, 
         "readability-lxml",
         "beautifulsoup",
         "json-ld parser",
+        "trafilatura",
+        "jina reader fallback",
+        "raw html fallback",
     ]
     set_agent_state(job, "extraction", status="running", progress=20, summary="Running multi-strategy extraction ranking.")
     set_agent_tools(job, "extraction", extraction_tools)
@@ -416,7 +419,15 @@ async def _node_extraction(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, 
         "node_complete",
         "Article extraction completed with ranked candidates.",
         input_payload={"article_url": article_url},
-        tools=["newspaper3k", "readability-lxml", "beautifulsoup", "json-ld parser"],
+        tools=[
+            "newspaper3k",
+            "readability-lxml",
+            "beautifulsoup",
+            "json-ld parser",
+            "trafilatura",
+            "jina reader fallback",
+            "raw html fallback",
+        ],
         output_payload={
             "method": article_raw.get("method"),
             "word_count": article_raw.get("word_count"),

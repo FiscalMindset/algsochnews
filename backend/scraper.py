@@ -23,6 +23,8 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 REQUEST_TIMEOUT = 15
+MIN_PRIMARY_WORDS = 120
+MIN_FALLBACK_WORDS = 80
 JUNK_LINE_RE = re.compile(
     r"(cookie|subscribe|newsletter|sign in|advertis|privacy policy|terms of use|all rights reserved)",
     re.IGNORECASE,
@@ -39,6 +41,10 @@ BOILERPLATE_OPENERS_RE = re.compile(
     r"(this\s+article\s+is\s+about|for\s+the\s+.*\s+see|photo\s+of|image\s+credit)",
     re.IGNORECASE,
 )
+
+
+def _has_min_words(text: str, min_words: int = MIN_PRIMARY_WORDS) -> bool:
+    return len((text or "").split()) >= min_words
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +161,7 @@ def _extract_newspaper(url: str) -> Optional[dict]:
         article = newspaper.Article(url, headers=HEADERS, request_timeout=REQUEST_TIMEOUT)
         article.download()
         article.parse()
-        if not article.text or len(article.text) < 200:
+        if not _has_min_words(article.text, MIN_PRIMARY_WORDS):
             return None
         images = list(article.images)[:20]
         authors = article.authors or []
@@ -192,7 +198,7 @@ def _extract_readability(url: str, html: str) -> Optional[dict]:
         content_container = summary_soup.find(["article", "main", "section", "div"]) or summary_soup
         text = summary_soup.get_text(separator=" ")
         text = _clean_article_text(text)
-        if len(text) < 200:
+        if not _has_min_words(text, MIN_PRIMARY_WORDS):
             return None
         paragraph_count = len(summary_soup.find_all("p"))
         return {
@@ -263,7 +269,7 @@ def _extract_json_ld(url: str, html: str) -> Optional[dict]:
 
         text = sanitize_text(" ".join(texts))
         text = _clean_article_text(text)
-        if len(text) < 200:
+        if not _has_min_words(text, MIN_PRIMARY_WORDS):
             return None
 
         return {
@@ -323,7 +329,7 @@ def _extract_beautifulsoup(url: str, html: str) -> Optional[dict]:
         text = " ".join(p.get_text(separator=" ", strip=True) for p in paragraphs)
         text = _clean_article_text(text)
 
-        if len(text) < 200:
+        if not _has_min_words(text, MIN_PRIMARY_WORDS):
             return None
 
         # All images
@@ -373,7 +379,7 @@ def _extract_trafilatura(url: str, html: str) -> Optional[dict]:
             return None
         payload = json.loads(extracted)
         text = _clean_article_text(payload.get("text", ""))
-        if len(text) < 200:
+        if not _has_min_words(text, MIN_PRIMARY_WORDS):
             return None
         return {
             "title": payload.get("title", ""),
@@ -394,6 +400,94 @@ def _extract_trafilatura(url: str, html: str) -> Optional[dict]:
         }
     except Exception as e:
         log.warning(f"trafilatura failed: {e}")
+        return None
+
+
+def _extract_jina_reader(url: str) -> Optional[dict]:
+    """Extractor 6: jina.ai reader proxy fallback for JS-heavy / bot-protected pages."""
+    try:
+        raw_url = (url or "").strip()
+        if not raw_url:
+            return None
+        if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+            raw_url = f"https://{raw_url}"
+
+        endpoints = [f"https://r.jina.ai/{raw_url}"]
+        if raw_url.startswith("https://"):
+            endpoints.append(f"https://r.jina.ai/http://{raw_url.removeprefix('https://')}")
+
+        for endpoint in endpoints:
+            try:
+                resp = requests.get(endpoint, headers=HEADERS, timeout=REQUEST_TIMEOUT + 10)
+                resp.raise_for_status()
+            except Exception:
+                continue
+
+            raw_text = resp.text or ""
+            cleaned = _clean_article_text(raw_text)
+            if not _has_min_words(cleaned, MIN_PRIMARY_WORDS):
+                continue
+
+            first_line = next((line.strip() for line in raw_text.splitlines() if line.strip()), "")
+            title = sanitize_text(first_line)
+
+            return {
+                "title": title,
+                "text": cleaned,
+                "top_image": None,
+                "images": [],
+                "authors": [],
+                "published_date": None,
+                "method": "jina_reader",
+                "selector_used": "r.jina.ai::reader_proxy",
+                "dom_tags": [],
+                "extraction_signals": [
+                    "Reader proxy extracted text from a JS-heavy or extraction-resistant page.",
+                ],
+                "method_details": {
+                    "endpoint": endpoint,
+                },
+            }
+
+        return None
+    except Exception as e:
+        log.warning(f"jina reader fallback failed: {e}")
+        return None
+
+
+def _extract_raw_html_text(url: str, html: str) -> Optional[dict]:
+    """Extractor 7: last-resort full-page text extraction."""
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        for tag in soup(["script", "style", "noscript", "svg", "iframe"]):
+            tag.decompose()
+
+        text = _clean_article_text(soup.get_text(separator=" ", strip=True))
+        if not _has_min_words(text, MIN_FALLBACK_WORDS):
+            return None
+
+        title_node = soup.find("h1") or soup.find("title")
+        title = sanitize_text(title_node.get_text(strip=True) if title_node else "")
+
+        return {
+            "title": title,
+            "text": text,
+            "top_image": None,
+            "images": [],
+            "authors": [],
+            "published_date": None,
+            "method": "raw_html",
+            "selector_used": "document::full_text_fallback",
+            "dom_tags": _summarize_dom_tags(soup),
+            "extraction_signals": [
+                "Used full-page text fallback because primary extractors found insufficient article body.",
+            ],
+            "method_details": {
+                "fallback": "full_page_text",
+            },
+        }
+    except Exception as e:
+        log.warning(f"raw html fallback failed: {e}")
         return None
 
 
@@ -441,6 +535,8 @@ def _score(result: dict) -> float:
         "json_ld": 0.07,
         "beautifulsoup": 0.02,
         "trafilatura": 0.08,
+        "jina_reader": 0.06,
+        "raw_html": 0.01,
     }.get(
         result.get("method", ""), 0.0
     )
@@ -507,6 +603,9 @@ def scrape_article(url: str) -> dict:
     r1 = _extract_newspaper(url)
     _register_candidate("newspaper3k", r1, "Extractor returned no usable article text.")
 
+    r6 = _extract_jina_reader(url)
+    _register_candidate("jina_reader", r6, "Reader proxy fallback returned insufficient article text.")
+
     if html:
         r2 = _extract_readability(url, html)
         _register_candidate("readability", r2, "Extractor returned no usable article text.")
@@ -519,6 +618,9 @@ def scrape_article(url: str) -> dict:
 
         r5 = _extract_trafilatura(url, html)
         _register_candidate("trafilatura", r5, "Trafilatura parser returned insufficient content.")
+
+        r7 = _extract_raw_html_text(url, html)
+        _register_candidate("raw_html", r7, "Full-page fallback text was too short or too noisy.")
     else:
         attempts.extend(
             [
@@ -542,11 +644,19 @@ def scrape_article(url: str) -> dict:
                     "status": "failed",
                     "reason": "HTML fetch failed before Trafilatura extraction.",
                 },
+                {
+                    "method": "raw_html",
+                    "status": "failed",
+                    "reason": "HTML fetch failed before full-page fallback extraction.",
+                },
             ]
         )
 
     if not candidates:
-        raise ValueError("All extraction methods failed — could not parse article.")
+        raise ValueError(
+            "All extraction methods failed - URL may block automated extraction or has too little article text. "
+            "Try a direct article URL pattern like /news/<slug> or /article/<slug> (avoid homepages, category pages, and login-only pages)."
+        )
 
     # Sort descending by score
     candidates.sort(key=lambda x: x[1], reverse=True)

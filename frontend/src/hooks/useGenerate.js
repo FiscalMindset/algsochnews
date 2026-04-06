@@ -11,6 +11,36 @@ import {
 const POLL_INTERVAL_MS = 2000
 const HEALTH_PING_INTERVAL_MS = 10000
 
+function isLikelyHomepageUrl(input) {
+  try {
+    const parsed = new URL(String(input || '').trim())
+    const path = (parsed.pathname || '/').replace(/\/+$/, '') || '/'
+    if (path === '/') return true
+    return /^\/(home|news|latest|top|topics?|category|categories)$/i.test(path)
+  } catch {
+    return false
+  }
+}
+
+function extractionUrlGuidance(articleUrl) {
+  if (isLikelyHomepageUrl(articleUrl)) {
+    return 'The submitted link looks like a homepage or section page. Open a specific story first, then paste that direct article URL.'
+  }
+  return 'Use a direct article URL pattern like /news/<slug>, /article/<slug>, or /YYYY/MM/<slug>. Avoid search, tag, category, and login-only pages.'
+}
+
+function normalizeFailureMessage(input, articleUrl = '') {
+  const message = String(input || '').trim()
+  if (!message) return 'Generation failed'
+
+  const lower = message.toLowerCase()
+  if (lower.includes('all extraction methods failed')) {
+    return `Extraction failed for this URL. The page may block bots or may not contain enough article body text. ${extractionUrlGuidance(articleUrl)}`
+  }
+
+  return message
+}
+
 export default function useGenerate() {
   const [articleUrl, setArticleUrl] = useState('')
   const [previewVideoUrl, setPreviewVideoUrl] = useState(null)
@@ -35,6 +65,7 @@ export default function useGenerate() {
   const healthRef                 = useRef(null)
   const statusRef                 = useRef('idle')
   const backendStatusRef          = useRef('unknown')
+  const articleUrlRef             = useRef('')
 
   const setBackendState = useCallback((nextStatus, nextMessage, options = {}) => {
     const { announceRecovery = false } = options
@@ -176,7 +207,8 @@ export default function useGenerate() {
           setModelVerification(data.result?.model_verification ?? data.model_verification ?? null)
           stopPolling()
         } else if (data.status === 'failed') {
-          setError(data.message || 'Generation failed')
+          setBackendState('online', `Backend live (${getApiBaseUrl()}) - job completed with a workflow failure`)
+          setError(normalizeFailureMessage(data.message, articleUrlRef.current))
           stopPolling()
         }
       } catch (err) {
@@ -220,7 +252,9 @@ export default function useGenerate() {
   }, [setBackendState, stopPolling])
 
   const generate = useCallback(async (url, useGemini, maxSegments, transitionIntensity = 'standard', transitionProfile = 'auto') => {
-    setArticleUrl(url.trim())
+    const normalizedUrl = url.trim()
+    articleUrlRef.current = normalizedUrl
+    setArticleUrl(normalizedUrl)
     setStatus('pending')
     setProgress(0)
     setMessage('Submitting job…')
@@ -238,7 +272,8 @@ export default function useGenerate() {
 
     try {
       await checkBackend({ warmupRetries: 3 })
-      const data = await submitGenerate(url, useGemini, maxSegments, transitionIntensity, transitionProfile)
+      const data = await submitGenerate(normalizedUrl, useGemini, maxSegments, transitionIntensity, transitionProfile)
+      setBackendState('online', `Backend live (${getApiBaseUrl()}) - job accepted`)
       setJobId(data.job_id)
       setStatus('pending')
       setAgents(data.agents ?? [])
@@ -259,7 +294,8 @@ export default function useGenerate() {
       const msg =
         detail === 'Method Not Allowed'
           ? 'Backend endpoint requires POST. Please generate from the app UI, not by opening /generate in browser.'
-          : detail || err.message
+          : normalizeFailureMessage(detail || err.message, normalizedUrl)
+      setBackendState('online', `Backend live (${getApiBaseUrl()}) - request reached backend`)
       setError(msg)
       setStatus('failed')
     }
@@ -268,6 +304,7 @@ export default function useGenerate() {
   const reset = useCallback(() => {
     stopPolling()
     setArticleUrl('')
+    articleUrlRef.current = ''
     setJobId(null)
     setStatus('idle')
     setProgress(0)
