@@ -13,6 +13,10 @@ const HEALTH_PING_INTERVAL_MS = 10000
 const MAX_TRANSIENT_POLL_FAILURES = 5
 const OFFLINE_GRACE_MS = 90000
 
+function backendOfflineStatusMessage() {
+  return `Frontend live, backend unreachable (${getApiBaseUrl()}) - start backend on :8000; auto-checking every ${Math.round(HEALTH_PING_INTERVAL_MS / 1000)}s`
+}
+
 function isLikelyHomepageUrl(input) {
   try {
     const parsed = new URL(String(input || '').trim())
@@ -134,7 +138,7 @@ export default function useGenerate() {
         }
         setBackendState(
           'offline',
-          `Backend unreachable (${getApiBaseUrl()}) - auto-checking every ${Math.round(HEALTH_PING_INTERVAL_MS / 1000)}s`,
+          backendOfflineStatusMessage(),
         )
         throw err
       }
@@ -157,7 +161,7 @@ export default function useGenerate() {
       } catch {
         setBackendState(
           'offline',
-          `Backend unreachable (${getApiBaseUrl()}) - auto-checking every ${Math.round(HEALTH_PING_INTERVAL_MS / 1000)}s`,
+            backendOfflineStatusMessage(),
         )
       }
     }
@@ -263,7 +267,7 @@ export default function useGenerate() {
 
         setBackendState(
           'offline',
-          `Backend unreachable (${getApiBaseUrl()}) - auto-checking every ${Math.round(HEALTH_PING_INTERVAL_MS / 1000)}s`,
+          backendOfflineStatusMessage(),
         )
         setError('Lost connection to backend for too long during generation. The run may still be processing on the server; refresh status in a moment or retry.')
         setStatus('failed')
@@ -333,9 +337,9 @@ export default function useGenerate() {
       if (!err.response) {
         setBackendState(
           'offline',
-          `Backend request failed (${getApiBaseUrl()}) - auto-checking every ${Math.round(HEALTH_PING_INTERVAL_MS / 1000)}s`,
+          backendOfflineStatusMessage(),
         )
-        setError('Backend is offline or waking up (Render free tier). Waiting for backend to come live...')
+        setError(`Frontend is live, but backend is offline at ${getApiBaseUrl()}. Start backend on :8000 and retry.`)
         setStatus('failed')
         return
       }
