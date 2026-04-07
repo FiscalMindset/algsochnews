@@ -619,7 +619,7 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
         summary="Executing copy and visual-prep in parallel fan-out.",
         branch="parallel",
     )
-    packaging_tools = ["broadcast copy generator", "source image prep", "visual planner"]
+    packaging_tools = ["headline generator", "subheadline generator", "source image prep", "visual planner"]
     set_agent_tools(job, "packaging", packaging_tools)
     set_agent_input(
         job,
@@ -679,7 +679,7 @@ async def _node_packaging_parallel(state: GraphState, ctx: Dict[str, Any]) -> Di
         job,
         "packaging",
         "parallel_fanout",
-        "Headline copy and visual-routing blueprint completed in parallel.",
+        "Headlines, subheadlines, and visual-routing blueprint completed in parallel.",
         output_payload={
             "copy_segments": len(copy_plan),
             "source_assets": len(source_inventory),
@@ -850,6 +850,8 @@ async def _node_review(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
 
     append_agent_output(job, "review", "QA average", review.overall_average, kind="metric")
     append_agent_output(job, "review", "Retry decision", review.retry_decision)
+    append_agent_output(job, "review", "Decision reason", review.decision_reason)
+    append_agent_output(job, "review", "Structured evaluation", review.structured_evaluation, kind="json")
     append_agent_output(job, "review", "Criteria", [item.model_dump() for item in review.criteria], kind="table")
 
     route_preview_state = cast(GraphState, {**state, "review": review, "weak_segments": weak_segments})
@@ -879,7 +881,7 @@ async def _node_review(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
     )
 
     route_history = list(state.get("route_history", []))
-    route_history.append(f"review:{review.retry_decision}")
+    route_history.append(f"review:{effective_route}")
 
     record_trace_event(
         job,
@@ -892,11 +894,12 @@ async def _node_review(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
             "average": review.overall_average,
             "passed": review.passed,
             "retry_decision": review.retry_decision,
+            "effective_route": effective_route,
             "weak_segments": weak_segments,
             "llm_critique": bool(qa_critique),
         },
-        decision=review.retry_decision,
-        route_to=review.retry_decision,
+        decision=effective_route,
+        route_to=effective_route,
     )
 
     set_agent_state(
@@ -904,7 +907,7 @@ async def _node_review(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]
         "review",
         status="done",
         progress=100,
-        summary=f"QA average {review.overall_average}/5 with decision {review.retry_decision}.",
+        summary=f"QA average {review.overall_average}/5 with decision {effective_route}.",
         metrics={"average": review.overall_average, "passed": review.passed, "retries": retry_round},
     )
 
@@ -1071,17 +1074,6 @@ async def _node_retry_packaging(state: GraphState, ctx: Dict[str, Any]) -> Dict[
     }
 
 
-async def _node_retry_both(state: GraphState, ctx: Dict[str, Any]) -> Dict[str, Any]:
-    current_retry = int(state.get("retry_round", 0))
-    mid = await _node_retry_editor(state, ctx)
-    merged = {**state, **mid, "retry_round": current_retry}
-    merged_state = cast(GraphState, dict(merged))
-    result = await _node_retry_packaging(merged_state, ctx)
-    result["retry_round"] = current_retry + 1
-    return result
-
-
-
 def _route_from_review(state: GraphState) -> str:
     review = state.get("review")
     if not review:
@@ -1091,13 +1083,23 @@ def _route_from_review(state: GraphState) -> str:
     if retry_round >= config.MAX_RETRIES:
         return "finalize"
 
-    decision = (review.retry_decision or "finalize").strip()
+    decision = (getattr(review, "final_decision", None) or review.retry_decision or "finalize").strip()
     if decision == "retry_editor":
         return "retry_editor"
     if decision == "retry_packaging":
         return "retry_packaging"
     if decision == "retry_editor_and_packaging":
-        return "retry_both"
+        criteria = {item.key: item.score for item in review.criteria}
+        editor_pressure = min(
+            criteria.get("structure_flow", 5),
+            criteria.get("hook_engagement", 5),
+            criteria.get("narration_quality", 5),
+        )
+        packaging_pressure = min(
+            criteria.get("visual_planning", 5),
+            criteria.get("headline_quality", 5),
+        )
+        return "retry_editor" if editor_pressure <= packaging_pressure else "retry_packaging"
 
     if review.passed:
         return "finalize"
@@ -1137,16 +1139,12 @@ def build_news_graph(ctx: Dict[str, Any]):
     async def retry_packaging_node(state):
         return await _node_retry_packaging(state, ctx)
 
-    async def retry_both_node(state):
-        return await _node_retry_both(state, ctx)
-
     graph.add_node("extract", extract_node)  # type: ignore[arg-type]
     graph.add_node("editor", editor_node)  # type: ignore[arg-type]
     graph.add_node("packaging_parallel", packaging_node)  # type: ignore[arg-type]
     graph.add_node("review", review_node)  # type: ignore[arg-type]
     graph.add_node("retry_editor", retry_editor_node)  # type: ignore[arg-type]
     graph.add_node("retry_packaging", retry_packaging_node)  # type: ignore[arg-type]
-    graph.add_node("retry_both", retry_both_node)  # type: ignore[arg-type]
 
     graph.set_entry_point("extract")
     graph.add_edge("extract", "editor")
@@ -1160,13 +1158,11 @@ def build_news_graph(ctx: Dict[str, Any]):
             "finalize": END,
             "retry_editor": "retry_editor",
             "retry_packaging": "retry_packaging",
-            "retry_both": "retry_both",
         },
     )
 
     graph.add_edge("retry_editor", "packaging_parallel")
     graph.add_edge("retry_packaging", "review")
-    graph.add_edge("retry_both", "review")
 
     return graph.compile()
 

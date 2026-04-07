@@ -773,7 +773,7 @@ def plan_visuals(
     log.info(f"Downloaded {len(downloaded)}/{len(article_images[:10])} source images")
 
     visuals: List[dict] = []
-    source_cursor = 0
+    has_any_source = len(downloaded) > 0
     blueprint_by_index = {
         int(item.get("index", -1)): item
         for item in (visual_blueprint or [])
@@ -782,25 +782,12 @@ def plan_visuals(
 
     for index, (seg, package) in enumerate(zip(segments, packages)):
         blueprint_item = blueprint_by_index.get(index, {})
-        preferred_kind = str(blueprint_item.get("preferred_visual_kind", "")).strip().lower()
-
-        if preferred_kind in {"source", "ai_support"}:
-            prefer_source = preferred_kind == "source"
-        else:
-            prefer_source = seg["segment_type"] in {"intro", "outro"} or index % 2 == 0
-
         source_item = None
-        if prefer_source and source_cursor < len(downloaded):
-            source_item = downloaded[source_cursor]
-            source_cursor += 1
-        elif (
-            not blueprint_item
-            and source_cursor < len(downloaded)
-            and seg["segment_type"] == "body"
-            and index == len(segments) - 2
-        ):
-            source_item = downloaded[source_cursor]
-            source_cursor += 1
+        source_reused = False
+        if has_any_source:
+            source_index = index % len(downloaded)
+            source_item = downloaded[source_index]
+            source_reused = index >= len(downloaded)
 
         support_copy = _brief_copy(package.get("source_excerpt", ""), max_words=20)
         support_prompt = (
@@ -817,7 +804,11 @@ def plan_visuals(
             ai_support_visual_prompt = None
             support_path = None
             support_image_url = None
-            rationale = "A source image is available for this beat, so the package keeps factual visual grounding on screen."
+            rationale = (
+                "A source image is available for this beat, so the package keeps factual visual grounding on screen."
+                if not source_reused
+                else "Reusing a verified source image to preserve source-grounded visuals across all beats."
+            )
             visual_source_kind = "source"
             visual_confidence = 0.92
         else:

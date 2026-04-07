@@ -132,6 +132,8 @@ class QAReview(BaseModel):
     overall_average: float
     retry_rounds: int = 0
     retry_decision: str = "finalize"
+    final_decision: str = "finalize"
+    decision_reason: str = ""
     weak_segments: List[int] = Field(default_factory=list)
     hard_failures: List[str] = Field(default_factory=list)
     gating: Dict[str, Any] = Field(default_factory=dict)
@@ -139,6 +141,7 @@ class QAReview(BaseModel):
     criteria: List[ReviewCriterion] = Field(default_factory=list)
     score_breakdown: Dict[str, float] = Field(default_factory=dict)
     score_explanation: str = ""
+    structured_evaluation: Dict[str, Any] = Field(default_factory=dict)
     segment_diagnostics: List[SegmentQADiagnostic] = Field(default_factory=list)
     next_actions: List[str] = Field(default_factory=list)
 

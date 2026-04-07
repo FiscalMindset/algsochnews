@@ -85,15 +85,15 @@ def build_workflow_map() -> dict:
         "parallel_stage": {
             "label": "Packaging fan-out",
             "tasks": [
-                "Headline + subheadline generation",
-                "Visual blueprint + layout routing",
+                "Headline generation",
+                "Subheadline generation",
+                "Visual planning",
             ],
         },
         "conditional_edges": [
             "qa_pass -> video_generation",
             "qa_retry_editor -> editor",
             "qa_retry_packaging -> packaging",
-            "qa_retry_editor_and_packaging -> editor+packaging",
             "video_generation -> render_review",
             "render_review -> finalize",
         ],

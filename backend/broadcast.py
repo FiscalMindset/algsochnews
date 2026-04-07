@@ -355,6 +355,71 @@ def _make_subheadline(text: str, main_headline: str) -> str:
     return _headline_case(trimmed.rstrip("."))
 
 
+def _story_beat_for_segment(index: int, total: int, segment_type: str) -> str:
+    segment_type = (segment_type or "body").lower()
+    if index == 0 or segment_type == "intro":
+        return "Hook"
+    if index == total - 1 or segment_type == "outro":
+        return "Closing"
+
+    if total <= 3:
+        return "Key development + Impact / response"
+    if total == 4:
+        if index == 1:
+            return "Context"
+        if index == 2:
+            return "Key development + Impact / response"
+        return "Key development"
+
+    if index == 1:
+        return "Context"
+    if index == total - 2:
+        return "Impact / response"
+    return "Key development"
+
+
+def _beat_label_for_subheadline(story_beat: str) -> str:
+    normalized = (story_beat or "").lower()
+    if "hook" in normalized:
+        return "Breaking"
+    if "context" in normalized:
+        return "Context"
+    if "impact" in normalized or "response" in normalized:
+        return "Impact"
+    if "closing" in normalized:
+        return "What next"
+    return "Development"
+
+
+def _subheadline_key(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _ensure_unique_subheadline(
+    subheadline: str,
+    story_beat: str,
+    used_subheadline_keys: set[str],
+) -> str:
+    beat_label = _beat_label_for_subheadline(story_beat)
+    base = _headline_case(_truncate_words(subheadline, 11).rstrip("."))
+    if beat_label.lower() not in base.lower():
+        base = _headline_case(_truncate_words(f"{beat_label}: {base}", 11).rstrip("."))
+
+    key = _subheadline_key(base)
+    if key and key not in used_subheadline_keys:
+        used_subheadline_keys.add(key)
+        return base
+
+    suffix = 2
+    while True:
+        candidate = _headline_case(_truncate_words(f"{base} {suffix}", 11).rstrip("."))
+        candidate_key = _subheadline_key(candidate)
+        if candidate_key and candidate_key not in used_subheadline_keys:
+            used_subheadline_keys.add(candidate_key)
+            return candidate
+        suffix += 1
+
+
 def _facts_from_segment(text: str) -> List[str]:
     facts = []
     for chunk in re.split(r"(?<=[.!?])\s+|;\s+", sanitize_text(text)):
@@ -485,6 +550,7 @@ def generate_segment_copy(
     overall = generate_overall_headline(article_title, keywords)
     used = {overall}
     used_keys = {_headline_key(overall)}
+    used_subheadline_keys: set[str] = set()
 
     resolved_intensity = _normalize_transition_intensity(transition_intensity)
     requested_profile = _normalize_transition_profile(transition_profile)
@@ -495,6 +561,7 @@ def generate_segment_copy(
     previous_transition: str | None = None
     for index, seg in enumerate(segments):
         segment_text_for_copy = sanitize_text(seg["text"])
+        story_beat = _story_beat_for_segment(index, total, seg["segment_type"])
         if _is_low_signal_sentence(segment_text_for_copy):
             segment_text_for_copy = sanitize_text(article_title or segment_text_for_copy)
 
@@ -551,6 +618,7 @@ def generate_segment_copy(
         subheadline = _make_subheadline(segment_text_for_copy, main_headline)
         if len(subheadline.split()) < 5:
             subheadline = _headline_case(_truncate_words(_first_sentence(segment_text_for_copy), 10).rstrip("."))
+        subheadline = _ensure_unique_subheadline(subheadline, story_beat, used_subheadline_keys)
 
         if seg["segment_type"] == "intro":
             top_tag = "BREAKING"
@@ -569,7 +637,7 @@ def generate_segment_copy(
         )
         previous_transition = transition
         facts = _facts_from_segment(segment_text_for_copy)
-        editorial_focus = _segment_focus(seg["segment_type"], index, total)
+        editorial_focus = f"{story_beat}: {_segment_focus(seg['segment_type'], index, total)}"
         lower_third = _make_lower_third(main_headline, subheadline)
         ticker_text = _make_ticker_text(main_headline, facts, seg["segment_type"])
 
@@ -580,14 +648,14 @@ def generate_segment_copy(
                 "subheadline": subheadline,
                 "top_tag": top_tag,
                 "transition": transition,
-                "story_beat": seg["segment_type"],
+                "story_beat": story_beat,
                 "transition_profile": resolved_profile,
                 "transition_intensity": resolved_intensity,
                 "editorial_focus": editorial_focus,
                 "lower_third": lower_third,
                 "ticker_text": ticker_text,
                 "headline_reason": (
-                    f"Headline focuses on the strongest beat in segment {index + 1} "
+                    f"Headline tracks the {story_beat.lower()} beat in segment {index + 1} "
                     f"and keeps on-screen copy short."
                 ),
                 "source_excerpt": _truncate_words(_first_sentence(segment_text_for_copy), 18),

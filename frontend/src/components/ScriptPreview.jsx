@@ -2,6 +2,29 @@ import { useEffect, useMemo, useState } from 'react'
 import { Captions, Check, ChevronDown, ChevronUp, Clipboard, FileText, Mic, Rows3 } from 'lucide-react'
 import { resolveAssetUrl } from '../api/client.js'
 
+const REQUIRED_TOP_LEVEL_KEYS = [
+  'article_url',
+  'source_title',
+  'video_duration_sec',
+  'segments',
+]
+
+const REQUIRED_SEGMENT_KEYS = [
+  'segment_id',
+  'start_time',
+  'end_time',
+  'layout',
+  'anchor_narration',
+  'main_headline',
+  'subheadline',
+  'top_tag',
+  'left_panel',
+  'right_panel',
+  'source_image_url',
+  'ai_support_visual_prompt',
+  'transition',
+]
+
 function parseScreenplayBlocks(text) {
   const raw = String(text || '').replace(/\r/g, '').trim()
   if (!raw) return []
@@ -83,6 +106,138 @@ function renderHighlightedJson(text) {
   }
 
   return output
+}
+
+function hasOwn(target, key) {
+  return !!target && Object.prototype.hasOwnProperty.call(target, key)
+}
+
+function analyzeStructuredJson(script) {
+  const root = Array.isArray(script) ? (script[0] || {}) : (script || {})
+
+  const topLevelChecks = REQUIRED_TOP_LEVEL_KEYS.map((key) => ({
+    key,
+    present: hasOwn(root, key),
+  }))
+
+  const segments = Array.isArray(root?.segments) ? root.segments : []
+  const perSegmentChecks = segments.map((segment, index) => {
+    const missing = REQUIRED_SEGMENT_KEYS.filter((key) => !hasOwn(segment, key))
+    const segmentId = hasOwn(segment, 'segment_id') ? segment.segment_id : index + 1
+    return {
+      index,
+      segmentId,
+      missing,
+      presentCount: REQUIRED_SEGMENT_KEYS.length - missing.length,
+      valid: missing.length === 0,
+    }
+  })
+
+  const segmentKeyCoverage = REQUIRED_SEGMENT_KEYS.map((key) => {
+    const missingInSegments = perSegmentChecks
+      .filter((segmentCheck) => segmentCheck.missing.includes(key))
+      .map((segmentCheck) => segmentCheck.segmentId)
+    return {
+      key,
+      missingCount: missingInSegments.length,
+      presentCount: segments.length - missingInSegments.length,
+      allPresent: missingInSegments.length === 0,
+      missingInSegments,
+    }
+  })
+
+  const topLevelPresentCount = topLevelChecks.filter((item) => item.present).length
+  const validSegmentsCount = perSegmentChecks.filter((item) => item.valid).length
+
+  return {
+    topLevelChecks,
+    topLevelPresentCount,
+    allTopLevelPresent: topLevelPresentCount === topLevelChecks.length,
+    segmentCount: segments.length,
+    validSegmentsCount,
+    allSegmentsValid: segments.length > 0 && validSegmentsCount === segments.length,
+    perSegmentChecks,
+    segmentKeyCoverage,
+  }
+}
+
+function valueType(value) {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'null'
+  return typeof value
+}
+
+function summarizeValue(value) {
+  const type = valueType(value)
+  if (type === 'string') {
+    return value.length > 120 ? `${value.slice(0, 117)}...` : value
+  }
+  if (type === 'number' || type === 'boolean' || type === 'null') {
+    return String(value)
+  }
+  if (type === 'array') {
+    return `Array(${value.length})`
+  }
+  if (type === 'object') {
+    return `Object(${Object.keys(value || {}).length} keys)`
+  }
+  return type
+}
+
+function keyScope(path) {
+  if (!path) return 'top-level'
+  if (path === 'segments' || path.startsWith('segments[')) return 'segments'
+  return 'top-level'
+}
+
+function collectJsonKeyRows(script, maxRows = 3500) {
+  const root = Array.isArray(script) ? (script[0] || {}) : (script || {})
+  const rows = []
+  let truncated = false
+
+  function pushRow(path, key, rawValue) {
+    if (!path || rows.length >= maxRows) {
+      if (rows.length >= maxRows) truncated = true
+      return
+    }
+    rows.push({
+      path,
+      key,
+      scope: keyScope(path),
+      type: valueType(rawValue),
+      preview: summarizeValue(rawValue),
+    })
+  }
+
+  function walk(node, basePath = '') {
+    if (rows.length >= maxRows) {
+      truncated = true
+      return
+    }
+    if (!node || typeof node !== 'object') return
+
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => {
+        const path = basePath ? `${basePath}[${index}]` : `[${index}]`
+        pushRow(path, `[${index}]`, item)
+        if (item && typeof item === 'object') {
+          walk(item, path)
+        }
+      })
+      return
+    }
+
+    Object.entries(node).forEach(([key, value]) => {
+      const path = basePath ? `${basePath}.${key}` : key
+      pushRow(path, key, value)
+      if (value && typeof value === 'object') {
+        walk(value, path)
+      }
+    })
+  }
+
+  walk(root)
+  return { rows, truncated }
 }
 
 function SegmentCard({ segment, defaultOpen = false }) {
@@ -294,11 +449,81 @@ function SegmentCard({ segment, defaultOpen = false }) {
 export default function ScriptPreview({ script, requestedView = null }) {
   const [viewMode, setViewMode] = useState('screenplay')
   const [copyState, setCopyState] = useState('')
+  const [showJsonAnalysis, setShowJsonAnalysis] = useState(false)
+  const [jsonSearchKey, setJsonSearchKey] = useState('')
+  const [jsonFilterScope, setJsonFilterScope] = useState('all')
+  const [jsonViewMode, setJsonViewMode] = useState('pretty')
   const [readerSize, setReaderSize] = useState('medium')
   const [readerFocus, setReaderFocus] = useState(false)
   const showJson = viewMode === 'json'
   const jsonPreview = useMemo(() => JSON.stringify(script, null, 2), [script])
   const highlightedJson = useMemo(() => renderHighlightedJson(jsonPreview), [jsonPreview])
+  const jsonAnalysis = useMemo(() => analyzeStructuredJson(script), [script])
+  const jsonKeyIndex = useMemo(() => collectJsonKeyRows(script), [script])
+  const jsonSearchTerm = jsonSearchKey.trim().toLowerCase()
+  const filteredJsonKeyRows = useMemo(() => {
+    const topRequired = new Set(REQUIRED_TOP_LEVEL_KEYS)
+    const segmentRequired = new Set(REQUIRED_SEGMENT_KEYS)
+
+    return (jsonKeyIndex.rows || []).filter((row) => {
+      let scopeMatches = true
+      if (jsonFilterScope === 'non-null' && row.type === 'null') {
+        scopeMatches = false
+      }
+      if (jsonFilterScope === 'top-level' && row.scope !== 'top-level') {
+        scopeMatches = false
+      }
+      if (jsonFilterScope === 'segments' && row.scope !== 'segments') {
+        scopeMatches = false
+      }
+      if (jsonFilterScope === 'required') {
+        if (row.scope === 'segments') {
+          scopeMatches = segmentRequired.has(row.key)
+        } else {
+          scopeMatches = topRequired.has(row.key)
+        }
+      }
+
+      if (!scopeMatches) {
+        return false
+      }
+
+      if (!jsonSearchTerm) {
+        return true
+      }
+
+      const path = String(row.path || '').toLowerCase()
+      const key = String(row.key || '').toLowerCase()
+      return path.includes(jsonSearchTerm) || key.includes(jsonSearchTerm)
+    })
+  }, [jsonFilterScope, jsonKeyIndex.rows, jsonSearchTerm])
+  const visibleJsonKeyRows = useMemo(() => filteredJsonKeyRows.slice(0, 500), [filteredJsonKeyRows])
+  const filteredKeyExportText = useMemo(
+    () => filteredJsonKeyRows.map((row) => `${row.path}: ${row.preview}`).join('\n'),
+    [filteredJsonKeyRows],
+  )
+  const matchedJsonRows = useMemo(() => filteredJsonKeyRows.slice(0, 300), [filteredJsonKeyRows])
+  const matchedJsonDocument = useMemo(
+    () => ({
+      search_key: jsonSearchKey || null,
+      filter: jsonFilterScope,
+      match_count: filteredJsonKeyRows.length,
+      truncated: filteredJsonKeyRows.length > matchedJsonRows.length,
+      matches: matchedJsonRows.map((row) => ({
+        path: row.path,
+        key: row.key,
+        scope: row.scope,
+        type: row.type,
+        preview: row.preview,
+      })),
+    }),
+    [filteredJsonKeyRows, jsonFilterScope, jsonSearchKey, matchedJsonRows],
+  )
+  const matchedJsonPreview = useMemo(() => JSON.stringify(matchedJsonDocument, null, 2), [matchedJsonDocument])
+  const highlightedMatchedJson = useMemo(() => renderHighlightedJson(matchedJsonPreview), [matchedJsonPreview])
+  const secondaryCopyLabel = jsonViewMode === 'matched' ? 'Matched JSON copied' : 'Keys copied'
+  const secondaryCopyText = jsonViewMode === 'matched' ? matchedJsonPreview : filteredKeyExportText
+  const secondaryCopyActionText = jsonViewMode === 'matched' ? 'Copy matched JSON' : 'Copy keys'
   const screenplayBlocks = useMemo(
     () => parseScreenplayBlocks(script?.screenplay_text || ''),
     [script?.screenplay_text],
@@ -310,6 +535,12 @@ export default function ScriptPreview({ script, requestedView = null }) {
       setCopyState('')
     }
   }, [requestedView])
+
+  useEffect(() => {
+    if (!showJson) {
+      setShowJsonAnalysis(false)
+    }
+  }, [showJson])
 
   async function copyText(text, label) {
     if (!text) return
@@ -428,16 +659,176 @@ export default function ScriptPreview({ script, requestedView = null }) {
         <div id="script-json-block" className="json-block">
           <div className="script-block-head">
             <div className="script-block-title">Structured JSON (screenplay remains visible below)</div>
-            <button
-              type="button"
-              className="block-copy-btn"
-              onClick={() => copyText(jsonPreview, 'JSON copied')}
-            >
-              {copyState === 'JSON copied' ? <Check size={13} /> : <Clipboard size={13} />}
-              {copyState === 'JSON copied' ? 'JSON copied' : 'Copy JSON'}
-            </button>
+            <div className="json-actions">
+              <button
+                type="button"
+                className="block-copy-btn block-copy-btn--analysis"
+                onClick={() => setShowJsonAnalysis((value) => !value)}
+              >
+                {showJsonAnalysis ? 'Hide analysis' : 'Analyze JSON'}
+              </button>
+              <button
+                type="button"
+                className="block-copy-btn"
+                onClick={() => copyText(jsonPreview, 'JSON copied')}
+              >
+                {copyState === 'JSON copied' ? <Check size={13} /> : <Clipboard size={13} />}
+                {copyState === 'JSON copied' ? 'JSON copied' : 'Copy JSON'}
+              </button>
+              <button
+                type="button"
+                className="block-copy-btn block-copy-btn--secondary"
+                onClick={() => copyText(secondaryCopyText, secondaryCopyLabel)}
+              >
+                {copyState === secondaryCopyLabel ? <Check size={13} /> : <Clipboard size={13} />}
+                {copyState === secondaryCopyLabel ? secondaryCopyLabel : secondaryCopyActionText}
+              </button>
+            </div>
           </div>
-          <pre className="json-reader"><code>{highlightedJson}</code></pre>
+
+          <div className="json-tools">
+            <label className="json-control json-control--search">
+              <span>Search key</span>
+              <input
+                type="text"
+                value={jsonSearchKey}
+                onChange={(event) => setJsonSearchKey(event.target.value)}
+                placeholder="e.g. source_image_url"
+              />
+            </label>
+
+            <label className="json-control">
+              <span>Filter</span>
+              <select value={jsonFilterScope} onChange={(event) => setJsonFilterScope(event.target.value)}>
+                <option value="all">All keys</option>
+                <option value="non-null">Non-null values only</option>
+                <option value="top-level">Top-level keys</option>
+                <option value="segments">Segment keys</option>
+                <option value="required">Required keys only</option>
+              </select>
+            </label>
+
+            <label className="json-control">
+              <span>View</span>
+              <select value={jsonViewMode} onChange={(event) => setJsonViewMode(event.target.value)}>
+                <option value="pretty">Pretty JSON</option>
+                <option value="keys">Key explorer</option>
+                <option value="matched">Matched JSON</option>
+              </select>
+            </label>
+
+            <span className="json-results-count">
+              Matches: {filteredJsonKeyRows.length}
+              {jsonKeyIndex.truncated ? ' (indexed subset)' : ''}
+            </span>
+          </div>
+
+          {showJsonAnalysis && (
+            <div className="json-analysis">
+              <div className="json-analysis-summary">
+                <span className={`analysis-pill ${jsonAnalysis.allTopLevelPresent ? 'analysis-pill--ok' : 'analysis-pill--warn'}`}>
+                  Top-level keys: {jsonAnalysis.topLevelPresentCount}/{jsonAnalysis.topLevelChecks.length}
+                </span>
+                <span className={`analysis-pill ${jsonAnalysis.allSegmentsValid ? 'analysis-pill--ok' : 'analysis-pill--warn'}`}>
+                  Segment key completeness: {jsonAnalysis.validSegmentsCount}/{jsonAnalysis.segmentCount || 0}
+                </span>
+              </div>
+
+              <div className="json-analysis-grid">
+                <div className="json-analysis-section">
+                  <h4>Required top-level keys</h4>
+                  <div className="json-analysis-list">
+                    {jsonAnalysis.topLevelChecks.map((item) => (
+                      <div key={`top-key-${item.key}`} className="json-analysis-item">
+                        <span>{item.key}</span>
+                        <strong className={item.present ? 'analysis-ok' : 'analysis-missing'}>
+                          {item.present ? 'present' : 'missing'}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="json-analysis-section">
+                  <h4>Required segment keys</h4>
+                  <div className="json-analysis-list">
+                    {jsonAnalysis.segmentKeyCoverage.map((item) => (
+                      <div key={`segment-key-${item.key}`} className="json-analysis-item">
+                        <span>{item.key}</span>
+                        <strong className={item.allPresent ? 'analysis-ok' : 'analysis-missing'}>
+                          {item.allPresent
+                            ? 'all segments'
+                            : `missing in ${item.missingCount}`}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {!!jsonAnalysis.perSegmentChecks.filter((item) => !item.valid).length && (
+                <div className="json-analysis-section json-analysis-section--full">
+                  <h4>Segments with missing keys</h4>
+                  <div className="json-analysis-failures">
+                    {jsonAnalysis.perSegmentChecks
+                      .filter((item) => !item.valid)
+                      .map((item) => (
+                        <div key={`segment-fail-${item.index}`} className="json-analysis-failure-item">
+                          <strong>Segment {item.segmentId}</strong>
+                          <p>{item.missing.join(', ')}</p>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {jsonViewMode === 'pretty' ? (
+            <pre className="json-reader"><code>{highlightedJson}</code></pre>
+          ) : jsonViewMode === 'keys' ? (
+            <div className="json-key-explorer">
+              <div className="json-key-head">
+                <strong>Key explorer</strong>
+                <span>Search and filter by key names and paths.</span>
+              </div>
+              {visibleJsonKeyRows.length ? (
+                <div className="json-key-list">
+                  {visibleJsonKeyRows.map((row, index) => (
+                    <div key={`${row.path}-${index}`} className="json-key-item">
+                      <div className="json-key-item-top">
+                        <span className="json-key-path">{row.path}</span>
+                        <span className={`json-scope-pill json-scope-pill--${row.scope}`}>{row.scope}</span>
+                      </div>
+                      <div className="json-key-item-bottom">
+                        <span className="json-key-type">{row.type}</span>
+                        <p>{row.preview}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="json-key-empty">No keys match your current search/filter.</p>
+              )}
+              {filteredJsonKeyRows.length > visibleJsonKeyRows.length && (
+                <p className="json-key-note">Showing first {visibleJsonKeyRows.length} of {filteredJsonKeyRows.length} matches.</p>
+              )}
+            </div>
+          ) : (
+            <div className="json-matched">
+              <div className="json-matched-head">
+                <strong>Matched JSON</strong>
+                <span>
+                  {matchedJsonDocument.match_count} matches
+                  {matchedJsonDocument.truncated ? ' (truncated)' : ''}
+                </span>
+              </div>
+              <p className="json-matched-note">
+                Includes only entries matching current search/filter, exported as structured JSON for quick sharing.
+              </p>
+              <pre className="json-reader"><code>{highlightedMatchedJson}</code></pre>
+            </div>
+          )}
         </div>
       )}
 
@@ -683,6 +1074,179 @@ export default function ScriptPreview({ script, requestedView = null }) {
           border-color: rgba(16,185,129,0.58);
           background: rgba(16,185,129,0.2);
         }
+        .json-actions {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .block-copy-btn--secondary {
+          border-color: rgba(251,191,36,0.44);
+          background: rgba(251,191,36,0.14);
+          color: #fde68a;
+        }
+        .block-copy-btn--secondary:hover {
+          border-color: rgba(251,191,36,0.64);
+          background: rgba(251,191,36,0.24);
+        }
+        .json-tools {
+          display: grid;
+          grid-template-columns: minmax(220px, 1.5fr) minmax(150px, 1fr) minmax(150px, 1fr) auto;
+          gap: 10px;
+          margin: 0 0 12px;
+          align-items: end;
+        }
+        .json-control {
+          display: grid;
+          gap: 6px;
+          min-width: 0;
+        }
+        .json-control span {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.46);
+        }
+        .json-control input,
+        .json-control select {
+          border-radius: 10px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(255,255,255,0.05);
+          color: rgba(255,255,255,0.9);
+          font-size: 12px;
+          padding: 9px 10px;
+          outline: none;
+        }
+        .json-control input::placeholder {
+          color: rgba(255,255,255,0.42);
+        }
+        .json-control input:focus,
+        .json-control select:focus {
+          border-color: rgba(59,130,246,0.65);
+          box-shadow: 0 0 0 3px rgba(59,130,246,0.18);
+        }
+        .json-results-count {
+          justify-self: end;
+          font-size: 11px;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.6);
+          border: 1px solid rgba(255,255,255,0.1);
+          background: rgba(255,255,255,0.04);
+          border-radius: 999px;
+          padding: 8px 12px;
+          white-space: nowrap;
+        }
+        .block-copy-btn--analysis {
+          border-color: rgba(59,130,246,0.45);
+          background: rgba(59,130,246,0.14);
+          color: #bfdbfe;
+        }
+        .block-copy-btn--analysis:hover {
+          border-color: rgba(59,130,246,0.65);
+          background: rgba(59,130,246,0.24);
+        }
+        .json-analysis {
+          border-radius: 14px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.03);
+          padding: 12px;
+          margin-bottom: 12px;
+          display: grid;
+          gap: 10px;
+        }
+        .json-analysis-summary {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        .analysis-pill {
+          font-size: 11px;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          border-radius: 999px;
+          padding: 6px 10px;
+          border: 1px solid rgba(148,163,184,0.34);
+          background: rgba(148,163,184,0.12);
+          color: rgba(226,232,240,0.95);
+        }
+        .analysis-pill--ok {
+          border-color: rgba(16,185,129,0.45);
+          background: rgba(16,185,129,0.14);
+          color: #bbf7d0;
+        }
+        .analysis-pill--warn {
+          border-color: rgba(245,158,11,0.45);
+          background: rgba(245,158,11,0.14);
+          color: #fde68a;
+        }
+        .json-analysis-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+        .json-analysis-section {
+          border-radius: 12px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.02);
+          padding: 10px;
+          display: grid;
+          gap: 8px;
+        }
+        .json-analysis-section--full {
+          grid-column: 1 / -1;
+        }
+        .json-analysis-section h4 {
+          margin: 0;
+          font-size: 11px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.5);
+        }
+        .json-analysis-list {
+          display: grid;
+          gap: 6px;
+        }
+        .json-analysis-item {
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+          align-items: center;
+          font-size: 12px;
+          color: rgba(255,255,255,0.84);
+        }
+        .json-analysis-item span {
+          overflow-wrap: anywhere;
+        }
+        .analysis-ok {
+          color: #86efac;
+        }
+        .analysis-missing {
+          color: #fca5a5;
+        }
+        .json-analysis-failures {
+          display: grid;
+          gap: 8px;
+        }
+        .json-analysis-failure-item {
+          border-radius: 10px;
+          border: 1px solid rgba(239,68,68,0.32);
+          background: rgba(239,68,68,0.1);
+          padding: 8px;
+          display: grid;
+          gap: 4px;
+        }
+        .json-analysis-failure-item strong {
+          font-size: 12px;
+          color: #fecaca;
+        }
+        .json-analysis-failure-item p {
+          margin: 0;
+          font-size: 12px;
+          line-height: 1.55;
+          color: rgba(255,240,240,0.9);
+          overflow-wrap: anywhere;
+        }
         .reader-focus-btn:hover,
         .reader-size-btn:hover {
           background: rgba(255,255,255,0.14);
@@ -729,6 +1293,129 @@ export default function ScriptPreview({ script, requestedView = null }) {
         }
         .json-reader code {
           font-family: var(--font-mono);
+        }
+        .json-key-explorer {
+          border-radius: 14px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.03);
+          padding: 12px;
+          display: grid;
+          gap: 10px;
+        }
+        .json-key-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .json-key-head strong {
+          font-size: 13px;
+          color: rgba(255,255,255,0.9);
+        }
+        .json-key-head span {
+          font-size: 11px;
+          color: rgba(255,255,255,0.56);
+        }
+        .json-key-list {
+          display: grid;
+          gap: 8px;
+          max-height: 420px;
+          overflow: auto;
+          padding-right: 4px;
+        }
+        .json-key-item {
+          border-radius: 10px;
+          border: 1px solid rgba(255,255,255,0.08);
+          background: rgba(255,255,255,0.03);
+          padding: 9px;
+          display: grid;
+          gap: 8px;
+        }
+        .json-key-item-top {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .json-key-path {
+          font-family: var(--font-mono);
+          font-size: 11px;
+          color: #bfdbfe;
+          overflow-wrap: anywhere;
+        }
+        .json-scope-pill {
+          font-size: 10px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          border-radius: 999px;
+          padding: 4px 8px;
+          border: 1px solid rgba(255,255,255,0.16);
+          color: rgba(255,255,255,0.8);
+          background: rgba(255,255,255,0.06);
+        }
+        .json-scope-pill--top-level {
+          border-color: rgba(16,185,129,0.5);
+          background: rgba(16,185,129,0.14);
+          color: #bbf7d0;
+        }
+        .json-scope-pill--segments {
+          border-color: rgba(59,130,246,0.48);
+          background: rgba(59,130,246,0.14);
+          color: #bfdbfe;
+        }
+        .json-key-item-bottom {
+          display: grid;
+          gap: 4px;
+        }
+        .json-key-type {
+          width: fit-content;
+          font-size: 10px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.56);
+          border: 1px solid rgba(255,255,255,0.14);
+          border-radius: 999px;
+          padding: 3px 7px;
+        }
+        .json-key-item-bottom p {
+          margin: 0;
+          font-size: 12px;
+          line-height: 1.6;
+          color: rgba(255,255,255,0.84);
+          overflow-wrap: anywhere;
+        }
+        .json-key-empty,
+        .json-key-note {
+          margin: 0;
+          font-size: 12px;
+          color: rgba(255,255,255,0.62);
+        }
+        .json-matched {
+          display: grid;
+          gap: 8px;
+        }
+        .json-matched-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .json-matched-head strong {
+          font-size: 13px;
+          color: rgba(255,255,255,0.9);
+        }
+        .json-matched-head span {
+          font-size: 11px;
+          color: rgba(255,255,255,0.58);
+        }
+        .json-matched-note {
+          margin: 0;
+          font-size: 12px;
+          color: rgba(255,255,255,0.68);
+          line-height: 1.6;
         }
         .json-token--key {
           color: #93c5fd;
@@ -1018,6 +1705,22 @@ export default function ScriptPreview({ script, requestedView = null }) {
           .block-copy-btn {
             flex: 1;
             justify-content: center;
+          }
+          .json-actions {
+            width: 100%;
+          }
+          .json-actions .block-copy-btn {
+            flex: 1;
+            justify-content: center;
+          }
+          .json-tools {
+            grid-template-columns: 1fr;
+          }
+          .json-results-count {
+            justify-self: start;
+          }
+          .json-analysis-grid {
+            grid-template-columns: 1fr;
           }
           .screenplay-segment-head {
             grid-template-columns: 34px minmax(0, 1fr);

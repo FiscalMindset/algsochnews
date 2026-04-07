@@ -5,7 +5,7 @@ qa.py — Broadcast screenplay review, scoring, and targeted retry decisions.
 from __future__ import annotations
 
 import re
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 from backend.models import QAReview, ReviewCriterion, SegmentQADiagnostic
 from backend.utils import get_logger, word_count
@@ -39,26 +39,253 @@ def _norm_words(text: str) -> set[str]:
     return {w for w in re.findall(r"[a-zA-Z]{3,}", text.lower())}
 
 
+_COMMON_TOKENS = {
+    "this",
+    "that",
+    "with",
+    "from",
+    "into",
+    "after",
+    "before",
+    "about",
+    "under",
+    "over",
+    "more",
+    "less",
+    "still",
+    "just",
+    "very",
+    "have",
+    "has",
+    "had",
+    "were",
+    "been",
+    "their",
+    "there",
+    "where",
+    "which",
+    "while",
+    "would",
+    "could",
+    "should",
+    "today",
+    "tonight",
+    "latest",
+    "update",
+    "story",
+}
+
+_STORY_BEAT_ORDER = ["hook", "context", "key_development", "impact_response", "closing"]
+
+_STORY_BEAT_ALIASES = {
+    "hook": ("hook", "breaking", "opening", "intro"),
+    "context": ("context", "background"),
+    "key_development": ("key development", "development", "new development", "escalation"),
+    "impact_response": ("impact", "response", "reaction", "fallout", "consequence"),
+    "closing": ("closing", "close", "outro", "what next", "next steps"),
+}
+
+
+def _story_beat_tags(segment: dict) -> set[str]:
+    raw = str(segment.get("story_beat") or segment.get("segment_type") or "").strip().lower()
+    tags: set[str] = set()
+    for tag, aliases in _STORY_BEAT_ALIASES.items():
+        if any(alias in raw for alias in aliases):
+            tags.add(tag)
+
+    if not tags:
+        segment_type = str(segment.get("segment_type") or "body").lower()
+        if segment_type == "intro":
+            tags.add("hook")
+        elif segment_type == "outro":
+            tags.add("closing")
+        else:
+            tags.add("key_development")
+
+    return tags
+
+
+def _story_beat_flow_metrics(segments: Sequence[dict]) -> Dict[str, object]:
+    first_positions: Dict[str, int] = {}
+    beat_sequence: List[str] = []
+
+    for index, segment in enumerate(segments):
+        tags = _story_beat_tags(segment)
+        ordered_tags = [tag for tag in _STORY_BEAT_ORDER if tag in tags]
+        beat_sequence.append(" + ".join(ordered_tags) if ordered_tags else "key_development")
+        for tag in ordered_tags:
+            if tag not in first_positions:
+                first_positions[tag] = index
+
+    covered = [tag for tag in _STORY_BEAT_ORDER if tag in first_positions]
+    coverage_ratio = len(covered) / float(len(_STORY_BEAT_ORDER))
+    ordered_positions = [first_positions[tag] for tag in covered]
+    ordered = ordered_positions == sorted(ordered_positions)
+
+    return {
+        "coverage_ratio": round(coverage_ratio, 3),
+        "ordered": ordered,
+        "covered": covered,
+        "missing": [tag for tag in _STORY_BEAT_ORDER if tag not in first_positions],
+        "sequence": " > ".join(beat_sequence),
+    }
+
+
+def _unsupported_token_ratio(text: str, article_tokens: set[str]) -> float:
+    tokens = [token.lower() for token in re.findall(r"[a-zA-Z]{4,}", text)]
+    if not tokens:
+        return 1.0
+    content_tokens = [token for token in tokens if token not in _COMMON_TOKENS]
+    if not content_tokens:
+        return 0.0
+    unsupported = [token for token in content_tokens if token not in article_tokens]
+    return len(unsupported) / max(len(content_tokens), 1)
+
+
+def _major_fact_coverage_ratio(segments: Sequence[dict], article_text: str) -> float:
+    article_tokens = _norm_words(article_text)
+    if not segments:
+        return 0.0
+
+    covered = 0
+    for segment in segments:
+        facts = segment.get("factual_points") or []
+        source_excerpt = str(segment.get("source_excerpt") or "")
+        fact_tokens = _norm_words(" ".join(map(str, facts)) + " " + source_excerpt)
+        if not fact_tokens:
+            fact_tokens = _norm_words(str(segment.get("source_text") or ""))
+
+        narration_tokens = _norm_words(str(segment.get("anchor_narration") or ""))
+        if not narration_tokens:
+            continue
+
+        fact_overlap = len(narration_tokens & fact_tokens) / max(len(narration_tokens), 1)
+        article_overlap = len(narration_tokens & article_tokens) / max(len(narration_tokens), 1)
+        if fact_overlap >= 0.22 and article_overlap >= 0.22:
+            covered += 1
+
+    return round(covered / max(len(segments), 1), 3)
+
+
+def _hallucination_metrics(segments: Sequence[dict], article_text: str) -> Dict[str, float | int]:
+    article_tokens = _norm_words(article_text)
+    if not segments:
+        return {"avg_unsupported_ratio": 1.0, "high_risk_segments": 0}
+
+    ratios: List[float] = []
+    high_risk = 0
+    for segment in segments:
+        ratio = _unsupported_token_ratio(str(segment.get("anchor_narration") or ""), article_tokens)
+        ratios.append(ratio)
+        if ratio > 0.62:
+            high_risk += 1
+
+    average = sum(ratios) / max(len(ratios), 1)
+    return {
+        "avg_unsupported_ratio": round(average, 3),
+        "high_risk_segments": int(high_risk),
+    }
+
+
+def _repetition_metrics(segments: Sequence[dict]) -> Dict[str, float | int | bool]:
+    main_headlines = [str(seg.get("main_headline") or "").strip().lower() for seg in segments if seg.get("main_headline")]
+    subheadlines = [str(seg.get("subheadline") or "").strip().lower() for seg in segments if seg.get("subheadline")]
+    narrations = [str(seg.get("anchor_narration") or "").strip().lower() for seg in segments if seg.get("anchor_narration")]
+
+    opener_phrases = [" ".join(item.split()[:4]) for item in narrations if item]
+
+    repeated_headlines = max(0, len(main_headlines) - len(set(main_headlines)))
+    repeated_subheadlines = max(0, len(subheadlines) - len(set(subheadlines)))
+    repeated_narration_lines = max(0, len(narrations) - len(set(narrations)))
+    repeated_openers = max(0, len(opener_phrases) - len(set(opener_phrases)))
+
+    headline_unique_ratio = len(set(main_headlines)) / max(len(main_headlines), 1)
+    subheadline_unique_ratio = len(set(subheadlines)) / max(len(subheadlines), 1)
+
+    no_repetition_ok = (
+        repeated_headlines == 0
+        and repeated_subheadlines <= 1
+        and repeated_narration_lines == 0
+        and repeated_openers <= 1
+    )
+
+    return {
+        "headline_unique_ratio": round(headline_unique_ratio, 3),
+        "subheadline_unique_ratio": round(subheadline_unique_ratio, 3),
+        "repeated_headlines": repeated_headlines,
+        "repeated_subheadlines": repeated_subheadlines,
+        "repeated_narration_lines": repeated_narration_lines,
+        "repeated_openers": repeated_openers,
+        "no_repetition_ok": no_repetition_ok,
+    }
+
+
+def _narration_visual_alignment_ratio(segments: Sequence[dict]) -> float:
+    if not segments:
+        return 0.0
+
+    aligned = 0
+    for segment in segments:
+        narration_tokens = _norm_words(str(segment.get("anchor_narration") or ""))
+        visual_text = " ".join(
+            [
+                str(segment.get("main_headline") or ""),
+                str(segment.get("subheadline") or ""),
+                str(segment.get("source_excerpt") or ""),
+                str(segment.get("right_panel") or ""),
+                str(segment.get("visual_rationale") or ""),
+            ]
+        )
+        visual_tokens = _norm_words(visual_text)
+        has_visual = bool(segment.get("layout") and (segment.get("source_image_url") or segment.get("ai_support_visual_prompt") or segment.get("scene_image_url")))
+        if not has_visual:
+            continue
+
+        overlap = len(narration_tokens & visual_tokens) / max(len(narration_tokens), 1)
+        if overlap >= 0.16:
+            aligned += 1
+
+    return round(aligned / max(len(segments), 1), 3)
+
+
 def _headline_score(segments: Sequence[dict]) -> tuple[int, str, List[str], str]:
-    main_headlines = [seg.get("main_headline", "").strip() for seg in segments]
-    subheadlines = [seg.get("subheadline", "").strip() for seg in segments]
-    unique_ratio = len(set(main_headlines)) / max(len(main_headlines), 1)
+    main_headlines = [str(seg.get("main_headline") or "").strip() for seg in segments]
+    subheadlines = [str(seg.get("subheadline") or "").strip() for seg in segments]
+    repetition = _repetition_metrics(segments)
+    beat_metrics = _story_beat_flow_metrics(segments)
+
+    unique_ratio = float(repetition["headline_unique_ratio"])
+    sub_unique_ratio = float(repetition["subheadline_unique_ratio"])
     short_main = all(word_count(text) <= 6 for text in main_headlines if text)
     short_sub = all(word_count(text) <= 11 for text in subheadlines if text)
+
+    aligned = 0
+    for segment in segments:
+        headline_tokens = _norm_words(f"{segment.get('main_headline', '')} {segment.get('subheadline', '')}")
+        source_tokens = _norm_words(str(segment.get("source_text") or ""))
+        overlap = len(headline_tokens & source_tokens) / max(len(headline_tokens), 1)
+        if overlap >= 0.2:
+            aligned += 1
+    alignment_ratio = aligned / max(len(segments), 1)
+
     evidence = [
         f"Unique headline ratio: {unique_ratio:.2f}",
+        f"Unique subheadline ratio: {sub_unique_ratio:.2f}",
+        f"Headline-source alignment ratio: {alignment_ratio:.2f}",
+        f"Story-beat coverage ratio: {float(beat_metrics['coverage_ratio']):.2f}",
         f"Longest main headline: {max((word_count(text) for text in main_headlines), default=0)} words",
         f"Longest subheadline: {max((word_count(text) for text in subheadlines), default=0)} words",
     ]
-    if unique_ratio == 1 and short_main and short_sub:
-        return 5, "Headlines and subheadlines are short, varied, and segment-specific.", evidence, "Keep this format and maintain segment-specific verbs."
-    if unique_ratio >= 0.8 and short_main:
-        return 4, "Headline system is mostly distinct and broadcast-friendly.", evidence, "Sharpen one or two generic lines to improve distinctiveness."
-    if unique_ratio >= 0.6:
-        return 3, "Headline system is usable but still repeats or runs long.", evidence, "Reduce repeated phrasing and tighten long subheadlines."
-    if unique_ratio >= 0.4:
-        return 2, "Too many segments share similar headline treatment.", evidence, "Rebuild headline stack with stronger beat differentiation."
-    return 1, "Headline system is repetitive and weak.", evidence, "Regenerate headline package from segment-specific facts."
+
+    if unique_ratio == 1 and sub_unique_ratio >= 0.9 and short_main and short_sub and alignment_ratio >= 0.75:
+        return 5, "Headlines are unique, beat-aligned, and broadcast-ready.", evidence, "Maintain this sharp, segment-specific headline progression."
+    if unique_ratio >= 0.85 and sub_unique_ratio >= 0.8 and short_main and alignment_ratio >= 0.65:
+        return 4, "Headline stack is strong with minor opportunities to sharpen progression.", evidence, "Tighten one or two weaker subheadlines for clearer beat progression."
+    if unique_ratio >= 0.7 and sub_unique_ratio >= 0.65:
+        return 3, "Headline stack is workable but still has repetition or weak beat linkage.", evidence, "Rebuild weak headlines around each segment's specific story beat."
+    if unique_ratio >= 0.5:
+        return 2, "Headline quality is inconsistent and repeats across beats.", evidence, "Regenerate headline/subheadline pairs with strict uniqueness and beat mapping."
+    return 1, "Headline system is repetitive and not broadcast-grade.", evidence, "Regenerate all segment headlines from beat-specific factual points."
 
 
 def _structure_score(segments: Sequence[dict]) -> tuple[int, str, List[str], str]:
@@ -66,6 +293,7 @@ def _structure_score(segments: Sequence[dict]) -> tuple[int, str, List[str], str
         return 1, "No segments were generated.", ["Segment count: 0"], "Generate at least intro, body, and outro segments."
 
     types = [seg.get("segment_type", "body") for seg in segments]
+    beat_metrics = _story_beat_flow_metrics(segments)
     has_intro = types[0] == "intro"
     has_outro = types[-1] == "outro"
     smooth_lengths = all(seg.get("end_time", 0) > seg.get("start_time", 0) for seg in segments)
@@ -75,12 +303,16 @@ def _structure_score(segments: Sequence[dict]) -> tuple[int, str, List[str], str
     )
     body_count = sum(1 for t in types if t == "body")
 
-    score = 2
+    score = 1
     if has_intro:
         score += 1
     if has_outro:
         score += 1
-    if smooth_lengths and body_count >= 2 and closes_well:
+    if smooth_lengths and body_count >= 2:
+        score += 1
+    if float(beat_metrics["coverage_ratio"]) >= 0.8 and bool(beat_metrics["ordered"]):
+        score += 1
+    if closes_well:
         score += 1
 
     reasons = []
@@ -88,15 +320,22 @@ def _structure_score(segments: Sequence[dict]) -> tuple[int, str, List[str], str
         reasons.append("clear opening")
     if body_count >= 2:
         reasons.append("middle flow")
+    if float(beat_metrics["coverage_ratio"]) >= 0.8:
+        reasons.append("story-beat coverage")
+    if bool(beat_metrics["ordered"]):
+        reasons.append("beat order respected")
     if has_outro and closes_well:
         reasons.append("proper close")
     runtime = segments[-1].get("end_time", 0)
     evidence = [
         f"Segment types: {' > '.join(types)}",
+        f"Story beats: {beat_metrics['sequence']}",
+        f"Beat coverage ratio: {float(beat_metrics['coverage_ratio']):.2f}",
+        f"Beat ordering valid: {'yes' if bool(beat_metrics['ordered']) else 'no'}",
         f"Runtime: {runtime:.1f} seconds",
         f"Monotonic timing: {'yes' if smooth_lengths else 'no'}",
     ]
-    recommendation = "Ensure intro, at least two body beats, and a decisive outro handoff."
+    recommendation = "Enforce Hook -> Context -> Key Development -> Impact/Response -> Closing progression with clear handoff language."
     return max(1, min(score, 5)), ", ".join(reasons) or "Structure feels incomplete.", evidence, recommendation
 
 
@@ -140,9 +379,12 @@ def _narration_score(segments: Sequence[dict], article_text: str) -> tuple[int, 
     openers = set()
     robotic_hits = 0
     instructional_hits = 0
+    quote_heavy_hits = 0
+    direct_lift_hits = 0
+    unsupported_ratios: List[float] = []
 
     for seg in segments:
-        narration = seg.get("anchor_narration", "")
+        narration = str(seg.get("anchor_narration") or "")
         words = narration.split()
         opener = " ".join(words[:3]).lower()
         if opener in openers:
@@ -155,24 +397,45 @@ def _narration_score(segments: Sequence[dict], article_text: str) -> tuple[int, 
         if _looks_instructional_narration(narration):
             instructional_hits += 1
 
-        overlap = len(_norm_words(narration) & article_tokens) / max(len(_norm_words(narration)), 1)
+        narration_tokens = _norm_words(narration)
+        overlap = len(narration_tokens & article_tokens) / max(len(narration_tokens), 1)
         overlap_scores.append(overlap)
 
+        quote_marks = narration.count('"') + narration.count("“") + narration.count("”")
+        if quote_marks >= 2:
+            quote_heavy_hits += 1
+
+        source_tokens = _norm_words(str(seg.get("source_text") or ""))
+        source_overlap = len(narration_tokens & source_tokens) / max(len(narration_tokens), 1)
+        if len(words) >= 12 and source_overlap >= 0.78:
+            direct_lift_hits += 1
+
+        unsupported_ratios.append(_unsupported_token_ratio(narration, article_tokens))
+
     avg_overlap = sum(overlap_scores) / max(len(overlap_scores), 1)
+    avg_unsupported = sum(unsupported_ratios) / max(len(unsupported_ratios), 1)
     evidence = [
         f"Average lexical grounding overlap: {avg_overlap:.2f}",
+        f"Average unsupported-token ratio: {avg_unsupported:.2f}",
         f"Repeated opener count: {repeated_openers}",
         f"Robotic phrase hits: {robotic_hits}",
         f"Instruction-style narration hits: {instructional_hits}",
+        f"Quote-heavy lines: {quote_heavy_hits}",
+        f"Direct article-lift risk lines: {direct_lift_hits}",
     ]
-    recommendation = "Keep factual overlap high and vary sentence openers across segments."
+    recommendation = "Keep anchor wording concise, paraphrased, and source-grounded while avoiding repeated openers and heavy quoting."
+
     if instructional_hits >= max(1, len(segments) // 3):
         return 1, "Narration includes editorial instructions instead of on-air lines.", evidence, "Replace directive notes with factual broadcast narration."
+    if direct_lift_hits >= max(1, len(segments) // 3):
+        return 1, "Narration is lifting article phrasing too directly.", evidence, "Rewrite lines into paraphrased anchor language instead of source-text copying."
+    if avg_unsupported > 0.58:
+        return 1, "Narration introduces too many unsupported tokens.", evidence, "Ground each segment in source facts before polishing tone."
     if instructional_hits > 0:
         return 2, "Narration includes some directive-style lines.", evidence, "Rewrite directive lines into declarative, factual narration."
-    if avg_overlap >= 0.45 and repeated_openers == 0 and robotic_hits == 0:
+    if avg_overlap >= 0.45 and avg_unsupported <= 0.42 and repeated_openers == 0 and robotic_hits == 0 and quote_heavy_hits == 0 and direct_lift_hits == 0:
         return 5, "Narration is grounded, concise, and varied.", evidence, recommendation
-    if avg_overlap >= 0.35 and robotic_hits <= 1:
+    if avg_overlap >= 0.35 and avg_unsupported <= 0.5 and robotic_hits <= 1 and direct_lift_hits == 0:
         return 4, "Narration quality is good with only minor repetition.", evidence, recommendation
     if avg_overlap >= 0.25:
         return 3, "Narration is acceptable but could sound sharper.", evidence, recommendation
@@ -191,6 +454,7 @@ def _visual_score(segments: Sequence[dict]) -> tuple[int, str, List[str], str]:
     source_count = 0
     ai_count = 0
     html_frame_count = 0
+    aligned_visuals = 0
 
     for seg in segments:
         if seg.get("layout") and seg.get("right_panel"):
@@ -206,21 +470,41 @@ def _visual_score(segments: Sequence[dict]) -> tuple[int, str, List[str], str]:
         if seg.get("html_frame_url"):
             html_frame_count += 1
 
+        narration_tokens = _norm_words(str(seg.get("anchor_narration") or ""))
+        visual_tokens = _norm_words(
+            " ".join(
+                [
+                    str(seg.get("main_headline") or ""),
+                    str(seg.get("subheadline") or ""),
+                    str(seg.get("right_panel") or ""),
+                    str(seg.get("visual_rationale") or ""),
+                ]
+            )
+        )
+        overlap = len(narration_tokens & visual_tokens) / max(len(narration_tokens), 1)
+        if overlap >= 0.16:
+            aligned_visuals += 1
+
     coverage_ratio = covered / max(len(segments), 1)
     variety = len(transitions)
+    source_priority_ratio = source_count / max(source_or_ai, 1)
+    alignment_ratio = aligned_visuals / max(len(segments), 1)
     evidence = [
         f"Coverage ratio: {coverage_ratio:.2f}",
         f"Source visuals: {source_count}, AI support visuals: {ai_count}",
+        f"Source-priority ratio: {source_priority_ratio:.2f}",
+        f"Narration-visual alignment ratio: {alignment_ratio:.2f}",
         f"Transition variety: {variety}",
         f"HTML frame previews: {html_frame_count}/{len(segments)}",
     ]
-    recommendation = "Keep every segment visually grounded and vary transitions while preserving continuity."
-    if coverage_ratio == 1 and source_or_ai == len(segments) and source_count and ai_count and variety >= 3:
-        return 5, "Visual plan covers every beat with good source/support balance.", evidence, recommendation
-    if coverage_ratio >= 0.9 and source_or_ai >= len(segments) - 1:
-        return 4, "Visual plan is strong with only minor coverage gaps.", evidence, recommendation
+    recommendation = "Prefer source imagery whenever available, and keep every visual beat tightly aligned with the narration copy."
+
+    if coverage_ratio == 1 and source_or_ai == len(segments) and source_priority_ratio >= 0.85 and alignment_ratio >= 0.75 and variety >= 3:
+        return 5, "Visual plan is complete, source-prioritized, and well-aligned to narration.", evidence, recommendation
+    if coverage_ratio >= 0.9 and source_or_ai >= len(segments) - 1 and source_priority_ratio >= 0.65 and alignment_ratio >= 0.65:
+        return 4, "Visual plan is strong with minor source-priority or alignment gaps.", evidence, recommendation
     if coverage_ratio >= 0.75:
-        return 3, "Visual plan is workable but still thin.", evidence, recommendation
+        return 3, "Visual plan is workable but needs stronger source usage or alignment.", evidence, recommendation
     if coverage_ratio >= 0.5:
         return 2, "Visual plan is inconsistent across segments.", evidence, recommendation
     return 1, "Visual plan is too weak for a broadcast package.", evidence, recommendation
@@ -426,7 +710,7 @@ def review_broadcast_package(
         ),
         ReviewCriterion(
             key="visual_planning",
-            label="Visual Planning & Placement",
+            label="Visual Planning",
             score=visual_score,
             reason=visual_reason,
             evidence=visual_evidence,
@@ -434,7 +718,7 @@ def review_broadcast_package(
         ),
         ReviewCriterion(
             key="headline_quality",
-            label="Headline / Subheadline Quality",
+            label="Headline/Subheadline Quality",
             score=headline_score,
             reason=headline_reason,
             evidence=headline_evidence,
@@ -449,9 +733,27 @@ def review_broadcast_package(
     runtime_sec = float(segments[-1].get("end_time", 0.0)) if segments else 0.0
     duration_ok = 60 <= runtime_sec <= 120
     grounding_avg = _factual_grounding_average(segments, article_text)
-    grounding_ok = grounding_avg >= 0.26
+    grounding_ok = grounding_avg >= 0.3
     visual_coverage = _visual_coverage_ratio(segments)
-    visual_coverage_ok = visual_coverage >= 0.85
+    visual_coverage_ok = visual_coverage >= 0.9
+
+    major_fact_coverage = _major_fact_coverage_ratio(segments, article_text)
+    major_fact_coverage_ok = major_fact_coverage >= 0.8
+
+    hallucination_metrics = _hallucination_metrics(segments, article_text)
+    no_hallucination_ok = (
+        float(hallucination_metrics["avg_unsupported_ratio"]) <= 0.55
+        and int(hallucination_metrics["high_risk_segments"]) == 0
+    )
+
+    repetition_metrics = _repetition_metrics(segments)
+    no_repetition_ok = bool(repetition_metrics["no_repetition_ok"])
+
+    narration_visual_alignment = _narration_visual_alignment_ratio(segments)
+    narration_visual_alignment_ok = narration_visual_alignment >= 0.7
+
+    beat_flow_metrics = _story_beat_flow_metrics(segments)
+    story_beat_flow_ok = float(beat_flow_metrics["coverage_ratio"]) >= 1.0 and bool(beat_flow_metrics["ordered"])
 
     hard_failures: List[str] = []
     if not duration_ok:
@@ -463,6 +765,21 @@ def review_broadcast_package(
     if not visual_coverage_ok:
         hard_failures.append("visual_coverage")
         notes.append("Visual gate failed: every segment should carry a clear layout + visual asset.")
+    if not major_fact_coverage_ok:
+        hard_failures.append("major_fact_coverage")
+        notes.append("Major-fact gate failed: key source facts are not covered consistently across segments.")
+    if not no_hallucination_ok:
+        hard_failures.append("hallucination_guard")
+        notes.append("Hallucination gate failed: unsupported narration tokens are above the safety limit.")
+    if not no_repetition_ok:
+        hard_failures.append("repetition_guard")
+        notes.append("Repetition gate failed: headline or narration duplication exceeded limits.")
+    if not narration_visual_alignment_ok:
+        hard_failures.append("narration_visual_alignment")
+        notes.append("Alignment gate failed: narration and visual plan are not consistently aligned.")
+    if not story_beat_flow_ok:
+        hard_failures.append("story_beat_flow")
+        notes.append("Story-beat gate failed: Hook -> Context -> Key Development -> Impact/Response -> Closing flow is incomplete.")
 
     # Deduplicate notes while preserving order.
     seen_notes = set()
@@ -472,31 +789,68 @@ def review_broadcast_package(
     score_explanation = _build_score_explanation(criteria, average)
     next_actions = _build_next_actions(criteria, segment_diagnostics)
 
-    main_failures = [item.key for item in criteria if item.score < 3]
-    main_failures.extend(hard_failures)
-    quality_pressure = [item.key for item in criteria if item.score < 4]
+    editor_reasons: List[str] = []
+    packaging_reasons: List[str] = []
+
+    if narration_score < 4:
+        editor_reasons.append(f"Narration Quality scored {narration_score}/5: {narration_reason}")
+    if hook_score < 4:
+        editor_reasons.append(f"Hook & Engagement scored {hook_score}/5: {hook_reason}")
+    if structure_score < 4:
+        editor_reasons.append(f"Story Structure & Flow scored {structure_score}/5: {structure_reason}")
+
+    if not duration_ok:
+        editor_reasons.append("Duration is outside the required 60-120 second window.")
+    if not grounding_ok:
+        editor_reasons.append("Narration grounding overlap is below the required threshold.")
+    if not major_fact_coverage_ok:
+        editor_reasons.append("Major facts are not adequately represented across narration beats.")
+    if not no_hallucination_ok:
+        editor_reasons.append("Unsupported narration tokens indicate possible hallucination risk.")
+    if not no_repetition_ok:
+        editor_reasons.append("Narration/headline repetition exceeded allowed tolerance.")
+    if not story_beat_flow_ok:
+        editor_reasons.append("Required story-beat progression is incomplete or out of order.")
+
+    if visual_score < 4:
+        packaging_reasons.append(f"Visual Planning scored {visual_score}/5: {visual_reason}")
+    if headline_score < 4:
+        packaging_reasons.append(f"Headline/Subheadline Quality scored {headline_score}/5: {headline_reason}")
+    if not visual_coverage_ok:
+        packaging_reasons.append("Visual coverage is below the minimum threshold for production.")
+    if not narration_visual_alignment_ok:
+        packaging_reasons.append("Narration and visuals are not aligned tightly enough per segment.")
 
     retry_decision = "finalize"
-    if any(key in quality_pressure for key in ("hook_engagement", "narration_quality", "structure_flow")):
+    decision_reason = "All rubric criteria and hard validation gates passed."
+
+    # Targeted retry policy:
+    # 1) Narration/editorial failures route only to editor.
+    # 2) Visual/headline packaging failures route only to packaging.
+    # 3) If all checks pass, finalize.
+    if narration_score < 4 or not duration_ok or not grounding_ok or not no_hallucination_ok:
         retry_decision = "retry_editor"
-    if any(key in quality_pressure for key in ("visual_planning", "headline_quality")):
-        retry_decision = "retry_packaging" if retry_decision == "finalize" else "retry_editor_and_packaging"
+        decision_reason = editor_reasons[0] if editor_reasons else "Narration/editorial quality fell below threshold."
+    elif visual_score < 4 or not visual_coverage_ok or not narration_visual_alignment_ok or headline_score < 4:
+        retry_decision = "retry_packaging"
+        decision_reason = packaging_reasons[0] if packaging_reasons else "Visual/headline packaging quality fell below threshold."
+    elif editor_reasons:
+        retry_decision = "retry_editor"
+        decision_reason = editor_reasons[0]
+    elif packaging_reasons:
+        retry_decision = "retry_packaging"
+        decision_reason = packaging_reasons[0]
 
-    if "duration_fit" in hard_failures or "factual_grounding" in hard_failures:
-        if retry_decision == "retry_packaging":
-            retry_decision = "retry_editor_and_packaging"
-        elif retry_decision == "finalize":
-            retry_decision = "retry_editor"
-    if "visual_coverage" in hard_failures:
-        if retry_decision == "retry_editor":
-            retry_decision = "retry_editor_and_packaging"
-        elif retry_decision == "finalize":
-            retry_decision = "retry_packaging"
+    notes.append(f"Reviewer routing decision: {retry_decision}. Reason: {decision_reason}")
+    seen_notes = set()
+    notes = [note for note in notes if not (note in seen_notes or seen_notes.add(note))]
 
-    if average >= 4 and not main_failures and not hard_failures:
-        retry_decision = "finalize"
-
-    passed = average >= 4 and not main_failures and not hard_failures
+    passed = (
+        retry_decision == "finalize"
+        and average >= 4
+        and not hard_failures
+        and all(item.score >= 4 for item in criteria)
+    )
 
     gating = {
         "duration_ok": duration_ok,
@@ -505,6 +859,42 @@ def review_broadcast_package(
         "grounding_average": grounding_avg,
         "visual_coverage_ok": visual_coverage_ok,
         "visual_coverage_ratio": visual_coverage,
+        "major_fact_coverage_ok": major_fact_coverage_ok,
+        "major_fact_coverage_ratio": major_fact_coverage,
+        "no_hallucination_ok": no_hallucination_ok,
+        "avg_unsupported_token_ratio": float(hallucination_metrics["avg_unsupported_ratio"]),
+        "hallucination_high_risk_segments": int(hallucination_metrics["high_risk_segments"]),
+        "no_repetition_ok": no_repetition_ok,
+        "headline_unique_ratio": float(repetition_metrics["headline_unique_ratio"]),
+        "subheadline_unique_ratio": float(repetition_metrics["subheadline_unique_ratio"]),
+        "repeated_openers": int(repetition_metrics["repeated_openers"]),
+        "narration_visual_alignment_ok": narration_visual_alignment_ok,
+        "narration_visual_alignment_ratio": narration_visual_alignment,
+        "story_beat_flow_ok": story_beat_flow_ok,
+        "story_beat_coverage_ratio": float(beat_flow_metrics["coverage_ratio"]),
+        "story_beat_ordered": bool(beat_flow_metrics["ordered"]),
+        "story_beat_sequence": str(beat_flow_metrics["sequence"]),
+    }
+
+    structured_evaluation = {
+        "scores": {
+            "structure": structure_score,
+            "hook": hook_score,
+            "narration": narration_score,
+            "visuals": visual_score,
+            "headlines": headline_score,
+        },
+        "final_decision": retry_decision,
+        "decision_reason": decision_reason,
+        "retry_target": (
+            "editor_agent"
+            if retry_decision == "retry_editor"
+            else "visual_packaging_agent"
+            if retry_decision == "retry_packaging"
+            else "finalize"
+        ),
+        "hard_failures": hard_failures,
+        "gates": gating,
     }
 
     review = QAReview(
@@ -512,6 +902,8 @@ def review_broadcast_package(
         overall_average=average,
         retry_rounds=retry_rounds,
         retry_decision=retry_decision,
+        final_decision=retry_decision,
+        decision_reason=decision_reason,
         weak_segments=weak_segments,
         hard_failures=hard_failures,
         gating=gating,
@@ -519,6 +911,7 @@ def review_broadcast_package(
         criteria=criteria,
         score_breakdown=score_breakdown,
         score_explanation=score_explanation,
+        structured_evaluation=structured_evaluation,
         segment_diagnostics=segment_diagnostics,
         next_actions=next_actions,
     )

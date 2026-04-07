@@ -38,6 +38,32 @@ PROMO_RE = re.compile(
 )
 
 
+def _anchor_style_polish(text: str, segment_type: str) -> str:
+    cleaned = sanitize_text(text or "")
+    if not cleaned:
+        return ""
+
+    cleaned = cleaned.replace("“", "").replace("”", "").replace('"', "")
+    cleaned = re.sub(
+        r"\b(as\s+per\s+the\s+report|according\s+to\s+the\s+article|according\s+to\s+the\s+report)\b",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\b(the\s+article\s+says|the\s+report\s+says)\b", "Officials say", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;")
+
+    if segment_type == "intro":
+        lowered = cleaned.lower()
+        if not any(cue in lowered for cue in ("breaking", "tonight", "developing", "we begin")):
+            cleaned = f"Breaking update: {cleaned}"
+
+    if segment_type == "body" and cleaned and not re.match(r"^(officials|investigators|authorities|rescue teams|city teams)\b", cleaned, re.IGNORECASE):
+        cleaned = f"Officials now say {cleaned[0].lower() + cleaned[1:] if len(cleaned) > 1 else cleaned.lower()}"
+
+    return _truncate_words(cleaned, 42)
+
+
 def _truncate_words(text: str, max_words: int) -> str:
     words = text.split()
     if len(words) <= max_words:
@@ -122,7 +148,10 @@ def _template_narration(
             closing = f"Latest verified line: {_truncate_words(facts[-1], 18)}. {OUTRO_TEMPLATES[1]}"
         return _truncate_words(sanitize_text(closing), 40)
 
-    return _truncate_words(secondary, 34)
+    body_line = secondary
+    if body_line and not re.match(r"^(officials|investigators|authorities|rescue teams|city teams)\b", body_line, re.IGNORECASE):
+        body_line = f"Officials now say {body_line[0].lower() + body_line[1:] if len(body_line) > 1 else body_line.lower()}"
+    return _truncate_words(sanitize_text(body_line), 34)
 
 
 # ------------------------------------------------------------------ #
@@ -204,8 +233,10 @@ def generate_narrations(
             headline=headline,
         )
         raw = sanitize_text(raw)
+        raw = _anchor_style_polish(raw, seg["segment_type"])
         if _is_instructional_or_meta(raw):
             raw = _truncate_words(sanitize_text(seg["text"]), 30)
+            raw = _anchor_style_polish(raw, seg["segment_type"])
 
         # 2. Gemini refinement (use on any segment when enabled to improve tone)
         if use_gemini:
@@ -217,11 +248,12 @@ def generate_narrations(
                 api_key=config.GEMINI_API_KEY,
             )
             final_line = sanitize_text(refined)
+            final_line = _anchor_style_polish(final_line, seg["segment_type"])
             if _is_instructional_or_meta(final_line):
                 final_line = raw
             narrations.append(_truncate_words(final_line, 42))
         else:
-            narrations.append(_truncate_words(raw, 42))
+            narrations.append(_truncate_words(_anchor_style_polish(raw, seg["segment_type"]), 42))
 
         log.debug(f"Seg {i} ({seg['segment_type']}): {narrations[-1][:60]}…")
 

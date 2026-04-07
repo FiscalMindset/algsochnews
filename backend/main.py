@@ -209,7 +209,17 @@ def _build_compliance_report(
     qa_average = float(review_payload.get("overall_average") or 0.0)
     qa_passed = bool(review_payload.get("passed"))
     hard_failures = list(review_payload.get("hard_failures") or [])
-    targeted_retry_ok = bool(isinstance(review_payload.get("weak_segments"), list))
+    gating = dict(review_payload.get("gating") or {})
+    retry_decision = str(review_payload.get("final_decision") or review_payload.get("retry_decision") or "finalize")
+    targeted_retry_ok = retry_decision in {"finalize", "retry_editor", "retry_packaging"} and bool(
+        isinstance(review_payload.get("weak_segments"), list)
+    )
+
+    major_fact_ok = bool(gating.get("major_fact_coverage_ok"))
+    hallucination_ok = bool(gating.get("no_hallucination_ok"))
+    repetition_ok = bool(gating.get("no_repetition_ok"))
+    narration_visual_alignment_ok = bool(gating.get("narration_visual_alignment_ok"))
+    story_beat_flow_ok = bool(gating.get("story_beat_flow_ok"))
 
     checks = [
         _compliance_check(
@@ -240,7 +250,7 @@ def _build_compliance_report(
             "targeted_retry",
             "Targeted retry mechanism",
             targeted_retry_ok,
-            f"decision={review_payload.get('retry_decision', 'n/a')}; weak_segments={len(review_payload.get('weak_segments') or [])}",
+            f"decision={retry_decision}; weak_segments={len(review_payload.get('weak_segments') or [])}",
         ),
         _compliance_check(
             "qa_gate",
@@ -265,6 +275,40 @@ def _build_compliance_report(
             "Visual coverage across segments",
             visual_ok,
             f"coverage_ratio={visual_coverage_ratio:.2f}",
+        ),
+        _compliance_check(
+            "major_fact_coverage",
+            "Major-fact coverage",
+            major_fact_ok,
+            f"ratio={gating.get('major_fact_coverage_ratio', 'n/a')}",
+        ),
+        _compliance_check(
+            "hallucination_guard",
+            "No hallucinated content",
+            hallucination_ok,
+            f"avg_unsupported_token_ratio={gating.get('avg_unsupported_token_ratio', 'n/a')}",
+        ),
+        _compliance_check(
+            "repetition_guard",
+            "No major repetition",
+            repetition_ok,
+            (
+                f"headline_unique_ratio={gating.get('headline_unique_ratio', 'n/a')}; "
+                f"subheadline_unique_ratio={gating.get('subheadline_unique_ratio', 'n/a')}; "
+                f"repeated_openers={gating.get('repeated_openers', 'n/a')}"
+            ),
+        ),
+        _compliance_check(
+            "narration_visual_alignment",
+            "Narration + visual alignment",
+            narration_visual_alignment_ok,
+            f"alignment_ratio={gating.get('narration_visual_alignment_ratio', 'n/a')}",
+        ),
+        _compliance_check(
+            "story_beat_flow",
+            "Story beat progression",
+            story_beat_flow_ok,
+            f"sequence={gating.get('story_beat_sequence', 'n/a')}",
         ),
         _compliance_check(
             "output_package",

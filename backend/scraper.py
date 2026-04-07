@@ -132,6 +132,23 @@ def _preview_excerpt(text: str, words: int = 36) -> str:
     return " ".join(parts[:words]).rstrip(" ,.;:") + "..."
 
 
+def _dedupe_http_images(images: List[str], limit: int = 20) -> List[str]:
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for img in images:
+        if not isinstance(img, str):
+            continue
+        if not img.startswith("http"):
+            continue
+        if img in seen:
+            continue
+        seen.add(img)
+        deduped.append(img)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
 def _summarize_dom_tags(soup: BeautifulSoup, limit: int = 6) -> List[str]:
     counts = Counter()
     for node in soup.find_all(True):
@@ -675,18 +692,26 @@ def scrape_article(url: str) -> dict:
     best["source_domain"] = extract_domain(url)
     best["word_count"] = len(best["text"].split())
     best["extraction_score"] = best_score
-    seen_images = set()
-    deduped_images = []
-    for img in best.get("images", []):
-        if not isinstance(img, str):
-            continue
-        if not img.startswith("http"):
-            continue
-        if img in seen_images:
-            continue
-        seen_images.add(img)
-        deduped_images.append(img)
-    best["images"] = deduped_images[:20]
+    deduped_images = _dedupe_http_images(best.get("images", []), limit=20)
+
+    # If the best text extractor has sparse/empty imagery, borrow images from
+    # other accepted candidates so visual planning can still ground to source.
+    image_fallback_applied = False
+    if not deduped_images:
+        fallback_pool: List[str] = []
+        for candidate_result, _score_value in candidates[1:]:
+            top = candidate_result.get("top_image")
+            if isinstance(top, str) and top.startswith("http"):
+                fallback_pool.append(top)
+            fallback_pool.extend(candidate_result.get("images", []))
+        deduped_images = _dedupe_http_images(fallback_pool, limit=20)
+        if deduped_images:
+            image_fallback_applied = True
+            if not best.get("top_image"):
+                best["top_image"] = deduped_images[0]
+
+    best["images"] = deduped_images
+    best["image_fallback_applied"] = image_fallback_applied
 
     candidate_rows = []
     for item, score in candidates:
